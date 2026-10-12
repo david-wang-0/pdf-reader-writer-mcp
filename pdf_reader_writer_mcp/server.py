@@ -142,9 +142,9 @@ def read_attachment(path: str, xref: int) -> dict[str, Any]:
 
 @tool(title="PDF: delete an annotation", annotations=DELETE)
 def remove_annotation(path: str, xref: int) -> dict[str, Any]:
-    """Delete an annotation by xref.
+    """Delete an annotation, with its replies, by xref.
 
-    Delete an annotation by the `xref` reported by `annotations` and save. Same save-Okular-first caveat as mark_text."""
+    Delete an annotation by the `xref` reported by `annotations`, together with every reply to it (recursively), and save. Same save-Okular-first caveat as mark_text."""
     return pdf.remove_annotation(path, xref)
 
 

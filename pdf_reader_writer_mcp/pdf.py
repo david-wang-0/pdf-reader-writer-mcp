@@ -7,12 +7,16 @@ the viewer and the model interoperate through the file with no private format.
 
 from __future__ import annotations
 
+import fcntl
 import os
-from typing import Any
+import time
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 import pymupdf
 
 DEFAULT_AUTHOR = os.environ.get("PDF_READER_WRITER_AUTHOR", "llm")
+LOCK_TIMEOUT = 10.0  # seconds a reader or writer waits for another writer's flock
 # Light blue, so machine highlights are told apart from the usual yellow ones.
 DEFAULT_COLOR = (0.6, 0.8, 1.0)
 NOTE_COLOR = (0.2, 0.45, 1.0)
@@ -61,10 +65,40 @@ _MARKUP = {
 }
 
 
-def _open(path: str) -> pymupdf.Document:
+def _lock(f: Any, mode: int) -> None:
+    deadline = time.monotonic() + LOCK_TIMEOUT
+    while True:
+        try:
+            fcntl.flock(f, mode | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("PDF is locked by another writer") from None
+            time.sleep(0.02)
+
+
+@contextmanager
+def _open(path: str, write: bool = False) -> Iterator[pymupdf.Document]:
+    """The document, opened fresh under an flock on the file itself.
+
+    Readers share the lock; a writer holds it exclusively and the document is
+    saved incrementally when the block exits without an exception. Nothing is
+    kept open across calls, so a write never works on stale bytes and writers in
+    other processes (the edit service, another MCP server) are never lost.
+    """
     if not os.path.isfile(path):
         raise FileNotFoundError(f"no such file: {path}")
-    return pymupdf.open(path)
+    with open(path, "rb") as f:
+        _lock(f, fcntl.LOCK_EX if write else fcntl.LOCK_SH)
+        doc = pymupdf.open(path)
+        try:
+            yield doc
+            if write:
+                if not doc.can_save_incrementally():
+                    raise RuntimeError("document cannot be saved incrementally (encrypted or repaired?)")
+                doc.saveIncr()
+        finally:
+            doc.close()
 
 
 def _check_page(doc: pymupdf.Document, page: int) -> None:
@@ -259,8 +293,70 @@ def _marked_text(pg: pymupdf.Page, annot: pymupdf.Annot) -> str:
     return " ".join(words[i][4] for i in sorted(picked))
 
 
-def annotations(path: str, page: int | None = None) -> list[dict[str, Any]]:
-    """Every annotation, with the text under markup annots and the note contents."""
+def to_pdf_quad(pg: pymupdf.Page, q: pymupdf.Quad) -> list[float]:
+    """A quad in PDF user space (origin bottom-left), as 8 numbers in /QuadPoints
+    order: upper-left, upper-right, lower-left, lower-right."""
+    m = ~pg.transformation_matrix
+    return [round(c, 3) for p in (q.ul, q.ur, q.ll, q.lr) for c in tuple(p * m)]
+
+
+def to_pdf_rect(pg: pymupdf.Page, r: pymupdf.Rect) -> list[float]:
+    """A rect in PDF user space, ``[x0, y0, x1, y1]`` with ``x0 < x1`` and ``y0 < y1``."""
+    return [round(c, 3) for c in tuple((r * ~pg.transformation_matrix).normalize())]
+
+
+def from_pdf_rect(pg: pymupdf.Page, r: list[float]) -> pymupdf.Rect:
+    """A PDF user-space rect in PyMuPDF's (unrotated, top-left origin) page space."""
+    return (pymupdf.Rect(r) * pg.transformation_matrix).normalize()
+
+
+def from_pdf_point(pg: pymupdf.Page, p: list[float]) -> pymupdf.Point:
+    return pymupdf.Point(p) * pg.transformation_matrix
+
+
+def from_pdf_quad(pg: pymupdf.Page, q: list[float]) -> pymupdf.Quad:
+    m = pg.transformation_matrix
+    pts = [pymupdf.Point(q[i], q[i + 1]) * m for i in range(0, 8, 2)]
+    return pymupdf.Quad(*pts)
+
+
+def annot_quads(annot: pymupdf.Annot) -> list[pymupdf.Quad]:
+    verts = annot.vertices or []
+    return [pymupdf.Quad(verts[i:i + 4]) for i in range(0, len(verts) - 3, 4)]
+
+
+def _entry(pg: pymupdf.Page, n: int, annot: pymupdf.Annot, geometry: bool) -> dict[str, Any]:
+    kind, name = annot.type[0], annot.type[1]
+    info = annot.info
+    entry: dict[str, Any] = {
+        "page": n,
+        "type": name,
+        "author": info.get("title", ""),
+        "note": info.get("content", ""),
+        "modified": info.get("modDate", ""),
+        "xref": annot.xref,
+    }
+    if kind in _MARKUP:
+        entry["text"] = _marked_text(pg, annot)
+    if kind == pymupdf.PDF_ANNOT_FILE_ATTACHMENT:
+        fi = annot.file_info
+        entry["file"] = fi.get("filename", "")
+        entry["bytes"] = fi.get("size", 0)
+    if annot.irt_xref:
+        entry["reply_to"] = annot.irt_xref
+    if annot.colors.get("stroke"):
+        entry["color"] = [round(c, 2) for c in annot.colors["stroke"]]
+    if geometry:
+        entry["irt"] = annot.irt_xref or 0
+        entry["quads"] = [to_pdf_quad(pg, q) for q in annot_quads(annot)] if kind in _MARKUP else []
+        entry["rect"] = to_pdf_rect(pg, annot.rect)
+    return entry
+
+
+def annotations(path: str, page: int | None = None, geometry: bool = False) -> list[dict[str, Any]]:
+    """Every annotation, with the text under markup annots and the note contents.
+
+    ``geometry`` adds ``irt`` (0 when none), ``quads`` and ``rect`` in PDF user space."""
     out: list[dict[str, Any]] = []
     with _open(path) as doc:
         if page is not None:
@@ -269,27 +365,7 @@ def annotations(path: str, page: int | None = None) -> list[dict[str, Any]]:
         for n in pages:
             pg = doc[n - 1]
             for annot in pg.annots():
-                kind, name = annot.type[0], annot.type[1]
-                info = annot.info
-                entry: dict[str, Any] = {
-                    "page": n,
-                    "type": name,
-                    "author": info.get("title", ""),
-                    "note": info.get("content", ""),
-                    "modified": info.get("modDate", ""),
-                    "xref": annot.xref,
-                }
-                if kind in _MARKUP:
-                    entry["text"] = _marked_text(pg, annot)
-                if kind == pymupdf.PDF_ANNOT_FILE_ATTACHMENT:
-                    fi = annot.file_info
-                    entry["file"] = fi.get("filename", "")
-                    entry["bytes"] = fi.get("size", 0)
-                if annot.irt_xref:
-                    entry["reply_to"] = annot.irt_xref
-                if annot.colors.get("stroke"):
-                    entry["color"] = [round(c, 2) for c in annot.colors["stroke"]]
-                out.append(entry)
+                out.append(_entry(pg, n, annot, geometry))
     return out
 
 
@@ -299,6 +375,29 @@ _STYLES = {
     "squiggly": ("add_squiggly_annot", NOTE_COLOR),
     "strikeout": ("add_strikeout_annot", (0.9, 0.3, 0.3)),
 }
+
+
+def style_of(subtype: str) -> str | None:
+    """The style name for a markup /Subtype (``StrikeOut`` -> ``strikeout``), else None."""
+    key = subtype.lower()
+    return key if key in _STYLES else None
+
+
+def add_markup(pg: pymupdf.Page, quads: list[pymupdf.Quad], style: str,
+               rgb: tuple[float, float, float], note: str, author: str,
+               created: str | None = None, modified: str | None = None,
+               opacity: float | None = None) -> pymupdf.Annot:
+    """One markup annotation over ``quads``, with author, note, colour and dates."""
+    if style not in _STYLES:
+        raise ValueError(f"style must be one of {', '.join(_STYLES)}")
+    annot = getattr(pg, _STYLES[style][0])(quads)
+    annot.set_colors(stroke=rgb)
+    if opacity is not None:
+        annot.set_opacity(opacity)
+    now = pymupdf.get_pdf_now()
+    annot.set_info(title=author, content=note, creationDate=created or now, modDate=modified or now)
+    annot.update()
+    return annot
 
 
 def _find_quads(pg: pymupdf.Page, text: str, page: int) -> list[pymupdf.Quad]:
@@ -319,12 +418,13 @@ def _margin_point(pg: pymupdf.Page, y: float) -> pymupdf.Point:
     return pymupdf.Point(x, max(pg.rect.y0 + 2, y - 2))
 
 
-def _note_annot(pg: pymupdf.Page, point: pymupdf.Point, note: str, author: str,
-                reply_to: int | None = None,
-                color: tuple[float, float, float] = NOTE_COLOR) -> pymupdf.Annot:
-    n = pg.add_text_annot(point, note, icon="Comment")
+def note_annot(pg: pymupdf.Page, point: pymupdf.Point, note: str, author: str,
+               reply_to: int | None = None,
+               color: tuple[float, float, float] = NOTE_COLOR, icon: str = "Comment",
+               created: str | None = None, modified: str | None = None) -> pymupdf.Annot:
+    n = pg.add_text_annot(point, note, icon=icon)
     now = pymupdf.get_pdf_now()
-    n.set_info(title=author, content=note, creationDate=now, modDate=now)
+    n.set_info(title=author, content=note, creationDate=created or now, modDate=modified or now)
     n.set_colors(stroke=color)
     if reply_to:
         n.set_irt_xref(reply_to)
@@ -345,32 +445,21 @@ def mark_text(path: str, page: int, text: str, note: str | None = None,
     """
     if style not in _STYLES:
         raise ValueError(f"style must be one of {', '.join(_STYLES)}")
-    method, default = _STYLES[style]
-    rgb = parse_color(color, default)
-    doc = _open(path)
-    try:
+    rgb = parse_color(color, _STYLES[style][1])
+    with _open(path, write=True) as doc:
         _check_page(doc, page)
         pg = doc[page - 1]
         quads = _find_quads(pg, text, page)
-        annot = getattr(pg, method)(quads)
-        annot.set_colors(stroke=rgb)
-        now = pymupdf.get_pdf_now()
         on_mark = "" if note_in_margin else (note or "")
-        annot.set_info(title=author, content=on_mark, creationDate=now, modDate=now)
-        annot.update()
+        annot = add_markup(pg, quads, style, rgb, on_mark, author)
         result = {"page": page, "xref": annot.xref, "style": style, "text": text,
                   "note": note or "", "author": author,
                   "color": [round(c, 2) for c in rgb]}
         if note and note_in_margin:
-            n = _note_annot(pg, _margin_point(pg, quads[0].rect.y0), note, author, annot.xref,
-                            parse_color(color, NOTE_COLOR))
+            n = note_annot(pg, _margin_point(pg, quads[0].rect.y0), note, author, annot.xref,
+                           parse_color(color, NOTE_COLOR))
             result["note_xref"] = n.xref
-        if not doc.can_save_incrementally():
-            raise RuntimeError("document cannot be saved incrementally (encrypted or repaired?)")
-        doc.saveIncr()
-        return result
-    finally:
-        doc.close()
+    return result
 
 
 def add_highlight(path: str, page: int, text: str, note: str | None = None,
@@ -383,20 +472,10 @@ def add_note(path: str, page: int | None, note: str, near_text: str | None = Non
              author: str = DEFAULT_AUTHOR) -> dict[str, Any]:
     """A comment icon in the margin: next to ``near_text``, as a threaded reply to
     annotation ``reply_to`` (page found automatically), or at the top of the page."""
-    doc = _open(path)
-    try:
-        pg = None
+    with _open(path, write=True) as doc:
         if reply_to:
-            # Keep the page object alive while its annotations are inspected: an Annot
-            # that outlives its Page crashes PyMuPDF.
-            for n in range(1, doc.page_count + 1):
-                cand = doc[n - 1]
-                y = next((a.rect.y0 for a in cand.annots() if a.xref == reply_to), None)
-                if y is not None:
-                    pg, page, point = cand, n, _margin_point(cand, y)
-                    break
-            if pg is None:
-                raise LookupError(f"no annotation with xref {reply_to}")
+            pg, target, page = find_annot(doc, reply_to)
+            point = _margin_point(pg, target.rect.y0)
         else:
             if page is None:
                 raise ValueError("page is required unless reply_to is given")
@@ -407,43 +486,68 @@ def add_note(path: str, page: int | None, note: str, near_text: str | None = Non
             else:
                 blocks = pg.get_text("blocks")
                 point = _margin_point(pg, min((b[1] for b in blocks), default=pg.rect.y0 + 40))
-        n = _note_annot(pg, point, note, author, reply_to, parse_color(color, NOTE_COLOR))
-        doc.saveIncr()
-        return {"page": page, "xref": n.xref, "note": note, "author": author,
-                "reply_to": reply_to or 0}
-    finally:
-        doc.close()
+        n = note_annot(pg, point, note, author, reply_to, parse_color(color, NOTE_COLOR))
+        result = {"page": page, "xref": n.xref, "note": note, "author": author,
+                  "reply_to": reply_to or 0}
+    return result
 
 
-def remove_annotation(path: str, xref: int, page: int | None = None) -> dict[str, Any]:
-    """Delete the annotation with PDF object number ``xref`` and save incrementally."""
-    doc = _open(path)
-    try:
-        if page is not None:
-            _check_page(doc, page)
-        pages = [page] if page is not None else range(1, doc.page_count + 1)
-        for n in pages:
-            pg = doc[n - 1]
-            for annot in pg.annots():
-                if annot.xref == xref:
-                    info = {"page": n, "xref": xref, "type": annot.type[1],
-                            "author": annot.info.get("title", "")}
-                    pg.delete_annot(annot)
-                    doc.saveIncr()
-                    return info
-        raise LookupError(f"no annotation with xref {xref}")
-    finally:
-        doc.close()
-
-
-def _find_annot(doc: pymupdf.Document, xref: int) -> tuple[pymupdf.Page, pymupdf.Annot, int]:
-    """Locate an annotation by xref; the Page is returned so it outlives the Annot."""
+def find_annot(doc: pymupdf.Document, xref: int) -> tuple[pymupdf.Page, pymupdf.Annot, int]:
+    """Locate an annotation by xref; the Page is returned so it outlives the Annot
+    (an Annot that outlives its Page crashes PyMuPDF)."""
     for n in range(1, doc.page_count + 1):
         pg = doc[n - 1]
         for annot in pg.annots():
             if annot.xref == xref:
                 return pg, annot, n
     raise LookupError(f"no annotation with xref {xref}")
+
+
+def thread(doc: pymupdf.Document, xref: int) -> list[int]:
+    """``xref`` and every reply to it, recursively, parents before their replies."""
+    children: dict[int, list[int]] = {}
+    for pg in doc:
+        for annot in pg.annots():
+            if annot.irt_xref:
+                children.setdefault(annot.irt_xref, []).append(annot.xref)
+    out: list[int] = []
+    todo = [xref]
+    while todo:
+        x = todo.pop(0)
+        if x not in out:
+            out.append(x)
+            todo[:0] = children.get(x, [])
+    return out
+
+
+def delete_thread(doc: pymupdf.Document, xref: int) -> list[int]:
+    """Delete ``xref`` and all its replies, replies first.
+
+    PyMuPDF's delete_annot drops an annot's direct replies but leaves replies to
+    those replies pointing at nothing, so the whole thread is walked here."""
+    xrefs = thread(doc, xref)
+    for x in reversed(xrefs):
+        try:
+            pg, annot, _ = find_annot(doc, x)
+        except LookupError:
+            continue  # already taken by delete_annot together with its parent
+        pg.delete_annot(annot)
+    return xrefs
+
+
+def remove_annotation(path: str, xref: int, page: int | None = None) -> dict[str, Any]:
+    """Delete the annotation with PDF object number ``xref``, with its replies
+    (recursively), and save incrementally."""
+    with _open(path, write=True) as doc:
+        if page is not None:
+            _check_page(doc, page)
+        pg, annot, n = find_annot(doc, xref)
+        if page is not None and n != page:
+            raise LookupError(f"no annotation with xref {xref} on page {page}")
+        info = {"page": n, "xref": xref, "type": annot.type[1],
+                "author": annot.info.get("title", "")}
+        info["replies"] = delete_thread(doc, xref)[1:]
+    return info
 
 
 def attach_file(path: str, page: int | None, name: str, content: str,
@@ -453,11 +557,10 @@ def attach_file(path: str, page: int | None, name: str, content: str,
     """Embed ``content`` as a file attachment annotation (paperclip in the margin),
     or replace the file of an existing attachment ``replace_xref``."""
     data = content.encode("utf-8")
-    doc = _open(path)
-    try:
+    with _open(path, write=True) as doc:
         now = pymupdf.get_pdf_now()
         if replace_xref:
-            pg, annot, page = _find_annot(doc, replace_xref)
+            pg, annot, page = find_annot(doc, replace_xref)
             if annot.type[0] != pymupdf.PDF_ANNOT_FILE_ATTACHMENT:
                 raise ValueError(f"xref {replace_xref} is a {annot.type[1]}, not a file attachment")
             annot.update_file(data, filename=name, ufilename=name, desc=note or "")
@@ -478,18 +581,15 @@ def attach_file(path: str, page: int | None, name: str, content: str,
             annot.set_info(title=author, content=note or "", creationDate=now, modDate=now)
             annot.set_colors(stroke=parse_color(color, NOTE_COLOR))
             annot.update()
-        doc.saveIncr()
-        return {"page": page, "xref": annot.xref, "name": name, "bytes": len(data),
-                "note": note or ""}
-    finally:
-        doc.close()
+        result = {"page": page, "xref": annot.xref, "name": name, "bytes": len(data),
+                  "note": note or ""}
+    return result
 
 
 def read_attachment(path: str, xref: int) -> dict[str, Any]:
     """The file of a file-attachment annotation, decoded as UTF-8 text."""
-    doc = _open(path)
-    try:
-        pg, annot, page = _find_annot(doc, xref)
+    with _open(path) as doc:
+        pg, annot, page = find_annot(doc, xref)
         if annot.type[0] != pymupdf.PDF_ANNOT_FILE_ATTACHMENT:
             raise ValueError(f"xref {xref} is a {annot.type[1]}, not a file attachment")
         info = annot.file_info
@@ -497,5 +597,3 @@ def read_attachment(path: str, xref: int) -> dict[str, Any]:
         return {"page": page, "xref": xref, "name": info.get("filename", ""),
                 "note": annot.info.get("content", ""), "author": annot.info.get("title", ""),
                 "bytes": len(data), "content": data.decode("utf-8", errors="replace")}
-    finally:
-        doc.close()

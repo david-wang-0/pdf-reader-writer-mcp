@@ -284,7 +284,7 @@ def test_remove_annotation_explicit_page(sample):
     with pytest.raises(LookupError):
         pdf.remove_annotation(sample, x, page=1)
     assert pdf.remove_annotation(sample, x, page=2) == {"page": 2, "xref": x, "type": "Text",
-                                                          "author": pdf.DEFAULT_AUTHOR}
+                                                          "author": pdf.DEFAULT_AUTHOR, "replies": []}
     assert pdf.annotations(sample) == []
 
 

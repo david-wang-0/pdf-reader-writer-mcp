@@ -29,7 +29,7 @@ and the notes travel with the file.
 | `add_note(path, note, page?, near_text?, reply_to?, color?)` | A comment icon in the margin, level with `near_text` or at the top of the page. With `reply_to` it is a threaded reply to that annotation, and the page is found automatically |
 | `attach_file(path, name, content, page?, note?, near_text?, replace_xref?, color?)` | Embeds a text file (`notes.md`, `diagram.mmd`, …) as a paperclip annotation in the margin. With `replace_xref` it replaces that attachment's file, and the page is found automatically |
 | `read_attachment(path, xref)` | The contents of a file-attachment annotation, decoded as text |
-| `remove_annotation(path, xref)` | Deletes an annotation by the `xref` that `annotations` reports, saved incrementally |
+| `remove_annotation(path, xref)` | Deletes an annotation by the `xref` that `annotations` reports, with every reply to it, saved incrementally |
 
 Pages are 1-based. A page outside the document raises `page N outside 1-M`; a
 missing file raises `no such file: <path>`.
@@ -59,6 +59,16 @@ The model takes `path` and `page` from there and calls this server for content:
 to read on, `mark_text` or `add_note` to write back. Neither viewer server writes
 to the PDF, and this server never talks to a viewer. Both viewers watch the file
 and re-render when it changes, so there is no reload step.
+
+## Marking from the viewer
+
+The user's own marks go through this package too. `pdf-reader-writer-edit` is a
+long-lived JSON-lines service that a viewer spawns. The VS Code viewer of
+vscode-pdf-mcp uses it to mark, note, reply, restyle, delete and undo. So the
+user and the model write through the same code and produce the same standard
+annotations. Every reader and writer, the MCP tools included, takes an `flock`
+on the PDF, so concurrent writes from both sides are never lost. The protocol is
+in [EDITING.md](EDITING.md).
 
 ## Install
 
@@ -97,6 +107,9 @@ Any other client: run `pdf-reader-writer-mcp` as a stdio server named `pdf-reade
   what is in the file, so `annotations` misses unsaved marks too. The tool
   descriptions tell the model to ask you to save first. The VS Code viewer has
   no unsaved state.
+- **Locking.** Writers take an exclusive `flock` on the PDF and give up after
+  10 s with `PDF is locked by another writer`. Okular does not take the lock
+  (it writes only when you save).
 - **Lines are reconstructed.** A PDF has no lines. `page_text`, `context` and
   `locate` use PyMuPDF's block and line grouping, so a two-column page reads
   column by column, and equations or footnotes can land in odd places.
@@ -116,7 +129,7 @@ uv venv && uv pip install -e '.[test]'
 .venv/bin/pytest
 ```
 
-`pdf_reader_writer_mcp/pdf.py` holds all PDF logic; `server.py` is the thin MCP layer over it.
+`pdf_reader_writer_mcp/pdf.py` holds all PDF logic and the file lock; `server.py` is the thin MCP layer over it and `edit.py` the edit service (`.venv/bin/pdf-reader-writer-edit`).
 
 ## License
 

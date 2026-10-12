@@ -21,6 +21,7 @@ Homepage = "https://github.com/david-wang-0/pdf-reader-writer-mcp"
 
 [project.scripts]
 pdf-reader-writer-mcp = "pdf_reader_writer_mcp.server:main"
+pdf-reader-writer-edit = "pdf_reader_writer_mcp.edit:main"
 
 [project.optional-dependencies]
 test = ["pytest"]
