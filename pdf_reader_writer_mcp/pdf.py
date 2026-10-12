@@ -377,6 +377,17 @@ _STYLES = {
 }
 
 
+def set_contents(annot: pymupdf.Annot, text: str) -> None:
+    """Set the note (/Contents), the empty string included: Annot.set_info skips
+    empty content, so a note could never be cleared through it. A Popup that
+    carries its own copy of /Contents is kept in step."""
+    pymupdf.mupdf.pdf_set_annot_contents(annot.this, text)
+    if annot.has_popup:
+        doc = annot.get_parent().parent
+        if doc.xref_get_key(annot.popup_xref, "Contents")[0] != "null":
+            doc.xref_set_key(annot.popup_xref, "Contents", pymupdf.get_pdf_str(text))
+
+
 def style_of(subtype: str) -> str | None:
     """The style name for a markup /Subtype (``StrikeOut`` -> ``strikeout``), else None."""
     key = subtype.lower()
@@ -395,7 +406,8 @@ def add_markup(pg: pymupdf.Page, quads: list[pymupdf.Quad], style: str,
     if opacity is not None:
         annot.set_opacity(opacity)
     now = pymupdf.get_pdf_now()
-    annot.set_info(title=author, content=note, creationDate=created or now, modDate=modified or now)
+    annot.set_info(title=author, creationDate=created or now, modDate=modified or now)
+    set_contents(annot, note)
     annot.update()
     return annot
 
@@ -424,7 +436,8 @@ def note_annot(pg: pymupdf.Page, point: pymupdf.Point, note: str, author: str,
                created: str | None = None, modified: str | None = None) -> pymupdf.Annot:
     n = pg.add_text_annot(point, note, icon=icon)
     now = pymupdf.get_pdf_now()
-    n.set_info(title=author, content=note, creationDate=created or now, modDate=modified or now)
+    n.set_info(title=author, creationDate=created or now, modDate=modified or now)
+    set_contents(n, note)
     n.set_colors(stroke=color)
     if reply_to:
         n.set_irt_xref(reply_to)
@@ -564,7 +577,8 @@ def attach_file(path: str, page: int | None, name: str, content: str,
             if annot.type[0] != pymupdf.PDF_ANNOT_FILE_ATTACHMENT:
                 raise ValueError(f"xref {replace_xref} is a {annot.type[1]}, not a file attachment")
             annot.update_file(data, filename=name, ufilename=name, desc=note or "")
-            annot.set_info(content=note or "", modDate=now)
+            set_contents(annot, note or "")
+            annot.set_info(modDate=now)
             annot.update()
         else:
             if page is None:
@@ -578,7 +592,8 @@ def attach_file(path: str, page: int | None, name: str, content: str,
                 y = min((b[1] for b in blocks), default=pg.rect.y0 + 40)
             annot = pg.add_file_annot(_margin_point(pg, y), data, name, ufilename=name,
                                       desc=note or "", icon="Paperclip")
-            annot.set_info(title=author, content=note or "", creationDate=now, modDate=now)
+            annot.set_info(title=author, creationDate=now, modDate=now)
+            set_contents(annot, note or "")
             annot.set_colors(stroke=parse_color(color, NOTE_COLOR))
             annot.update()
         result = {"page": page, "xref": annot.xref, "name": name, "bytes": len(data),

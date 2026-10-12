@@ -118,7 +118,7 @@ def update(path: str, xref: int, note: str | None = None, color: str | None = No
             pg.delete_annot(old)
             return {"xref": new_xref}
         if note is not None:
-            annot.set_info(content=note)
+            pdf.set_contents(annot, note)
         if color is not None:
             annot.set_colors(stroke=pdf.parse_color(color, pdf.DEFAULT_COLOR))
         annot.set_info(modDate=now)
@@ -194,8 +194,8 @@ def _restore_one(doc: pymupdf.Document, s: dict[str, Any], irt: int) -> pymupdf.
                               base64.b64decode(f["data_base64"]), f["name"], ufilename=f["name"],
                               desc=f.get("desc", ""), icon=s.get("icon") or "PushPin")
         now = pymupdf.get_pdf_now()
-        a.set_info(title=s.get("author", ""), content=s.get("contents", ""),
-                   creationDate=created or now, modDate=modified or now)
+        a.set_info(title=s.get("author", ""), creationDate=created or now, modDate=modified or now)
+        pdf.set_contents(a, s.get("contents", ""))
         if color:
             a.set_colors(stroke=color)
         a.update()

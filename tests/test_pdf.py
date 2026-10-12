@@ -123,6 +123,13 @@ def test_attachments(sample):
         pdf.read_attachment(sample, h["xref"])
 
 
+def test_replacing_an_attachment_without_note_clears_the_note(sample):
+    """Regression: the replace path meant to clear the note but Annot.set_info skipped the empty string."""
+    x = pdf.attach_file(sample, 1, "a.md", "old", note="about old")["xref"]
+    pdf.attach_file(sample, None, "b.md", "new", replace_xref=x)
+    assert pdf.read_attachment(sample, x)["note"] == ""
+
+
 def test_colors(sample):
     assert pdf.parse_color(None, (1, 1, 1)) == (1, 1, 1)
     assert pdf.parse_color("Green", (0, 0, 0)) == pdf.COLORS["green"]

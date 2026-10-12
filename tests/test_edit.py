@@ -149,6 +149,38 @@ def test_update_note_and_color_in_place(sample):
     assert call("update", path=sample, xref=x, note="mine", only_author="David") == {"xref": x}
 
 
+def test_update_can_clear_a_note(sample):
+    """Regression: Annot.set_info skips empty content, so note "" used to leave the old note."""
+    x = call("mark", path=sample, page=1, rects=[pdf_rect(sample, 1, "fox")], author="David")["xref"]
+    call("update", path=sample, xref=x, note="edited")
+    call("update", path=sample, xref=x, note="")
+    assert call("snapshot", path=sample, xref=x)["contents"] == ""
+    assert raw(sample, x, "Contents") == ("string", "")
+    n = call("note", path=sample, page=1, point=[50, 50], note="icon text", author="David")["xref"]
+    call("update", path=sample, xref=n, note="")
+    assert {a["xref"]: a["note"] for a in pdf.annotations(sample)}[n] == ""
+    # undoing a note edit on a mark that had no note: restore the empty note
+    before = call("snapshot", path=sample, xref=x)
+    call("update", path=sample, xref=x, note="oops")
+    call("update", path=sample, xref=x, note=before["contents"])
+    assert call("snapshot", path=sample, xref=x)["contents"] == ""
+
+
+def test_update_keeps_a_popup_copy_of_the_note_in_step(sample):
+    x = call("mark", path=sample, page=1, rects=[pdf_rect(sample, 1, "fox")], author="David", note="old")["xref"]
+    with pymupdf.open(sample) as doc:  # a Popup with its own /Contents, as some viewers write it
+        pg = doc[0]
+        a = next(pg.annots())
+        a.set_popup(pymupdf.Rect(300, 300, 400, 400))
+        popup = a.popup_xref
+        doc.xref_set_key(popup, "Contents", "(old)")
+        doc.saveIncr()
+    call("update", path=sample, xref=x, note="new")
+    assert raw(sample, popup, "Contents") == ("string", "new")
+    call("update", path=sample, xref=x, note="")
+    assert raw(sample, popup, "Contents") == ("string", "") and raw(sample, x, "Contents") == ("string", "")
+
+
 def test_update_style_recreates_and_keeps_the_thread(sample):
     root = call("mark", path=sample, page=1, rects=[pdf_rect(sample, 1, "brown"), pdf_rect(sample, 1, "fox")],
                 author="David", note="root", color="pink")
