@@ -1,0 +1,33 @@
+[project]
+name = "pdf-reader-writer-mcp"
+version = "0.1.0"
+description = "MCP server that reads and annotates PDFs: numbered page text, paragraphs, links, outline, and PDF annotations (read and write), so an LLM can read and mark alongside you in any viewer."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "David Wang" }]
+keywords = ["mcp", "pdf", "annotations", "pymupdf", "okular", "vscode"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Text Processing",
+]
+dependencies = [
+  "mcp>=1.2",
+  "pymupdf>=1.24",
+]
+
+[project.urls]
+Homepage = "https://github.com/david-wang-0/pdf-reader-writer-mcp"
+
+[project.scripts]
+pdf-reader-writer-mcp = "pdf_reader_writer_mcp.server:main"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pdf_reader_writer_mcp"]
