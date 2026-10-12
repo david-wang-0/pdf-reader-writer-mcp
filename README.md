@@ -68,19 +68,17 @@ With [uv](https://docs.astral.sh/uv/):
 uv tool install git+https://github.com/david-wang-0/pdf-reader-writer-mcp
 ```
 
-Then register it with your MCP client as a stdio server named `pdf-reader-writer`
-that runs `pdf-reader-writer-mcp`. In Claude Code, for every project (user scope):
+Then register it with Claude Code at user scope, so it is available in every
+project, next to the viewer server you read with (okular-mcp or vscode-pdf-mcp,
+registered the same way):
 
 ```sh
 claude mcp add pdf-reader-writer -s user -- pdf-reader-writer-mcp
 ```
 
-or for one repository only (project scope, written to that repository's `.mcp.json`;
-run it inside the repository):
-
-```sh
-claude mcp add pdf-reader-writer -s project -- pdf-reader-writer-mcp
-```
+To limit it to one repository instead, run
+`claude mcp add pdf-reader-writer -s project -- pdf-reader-writer-mcp` inside that
+repository (written to its `.mcp.json`).
 
 Codex CLI:
 
@@ -88,8 +86,7 @@ Codex CLI:
 codex mcp add pdf-reader-writer -- pdf-reader-writer-mcp
 ```
 
-Any other client: run `pdf-reader-writer-mcp` as a stdio server. Register the
-viewer server you read with (okular-mcp or vscode-pdf-mcp) alongside it.
+Any other client: run `pdf-reader-writer-mcp` as a stdio server named `pdf-reader-writer`.
 
 ## Gotchas
 
