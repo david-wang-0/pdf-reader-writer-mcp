@@ -1,3 +1,4 @@
+import fcntl
 import os
 import shutil
 import subprocess
@@ -368,6 +369,37 @@ def test_sync_fallback_and_skipped(fake):
     assert source.sync(path)["updated"] == []  # the fallback note compares with its “text”: note
 
 
+def test_lookups_run_without_the_lock(fake, monkeypatch):
+    path, tex = fake(UNDO)
+    pdf.mark_text(path, 1, "brown fox")
+    pdf.add_note(path, 1, "n", near_text="second line")
+    inner, calls = source.synctex_edit, []
+
+    def unlocked(p, page, x, y):
+        with open(p, "rb") as f:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)  # BlockingIOError while anyone holds the PDF
+            fcntl.flock(f, fcntl.LOCK_UN)
+        calls.append(page)
+        return inner(p, page, x, y)
+    monkeypatch.setattr(source, "synctex_edit", unlocked)
+    assert len(source.sync(path)["inserted"]) == 2 and len(calls) == 2
+
+
+def test_a_mark_added_during_the_lookups_is_synced(fake, monkeypatch):
+    path, tex = fake(UNDO)
+    pdf.mark_text(path, 1, "brown fox")
+    inner, added = source.synctex_edit, []
+
+    def adding(p, page, x, y):
+        if not added:  # the user marks while the lookups run
+            added.append(pdf.mark_text(p, 1, "lazy dog")["xref"])
+        return inner(p, page, x, y)
+    monkeypatch.setattr(source, "synctex_edit", adding)
+    assert len(source.sync(path)["inserted"]) == 2
+    assert "{brown fox}{}" in tex.read_text() and "{lazy dog}{}" in tex.read_text()
+    assert nm(path, added[0]).startswith("pdfnotes:")
+
+
 def test_fresh_ids_are_unique(fake, monkeypatch):
     path, tex = fake(PRE + "The quick brown fox \\pdfnote[id=aaaa0000]{x}\n\\end{document}\n")
     pdf.add_note(path, 1, "one")
@@ -490,6 +522,25 @@ def test_tex_without_package_or_synctex(paper):
         source.sync(path)
     os.remove(paper / "doc.synctex.gz")
     assert source.sync(path)["source"] is None
+
+
+@needs_tex
+def test_tex_symlinked_input_stays_a_symlink(tmp_path):
+    d, shared = tmp_path / "paper", tmp_path / "shared"
+    d.mkdir(); shared.mkdir()
+    (d / "doc.tex").write_text(DOC)
+    target = shared / "sec.tex"  # outside the main file's directory; the link sits inside
+    target.write_text("The section file has its own words.\n")
+    os.chmod(target, 0o640)
+    (d / "sec.tex").symlink_to(target)
+    path = build(d)
+    pdf.mark_text(path, 1, "own words")
+    (ins,) = source.sync(path)["inserted"]
+    assert ins["file"] == "sec.tex"
+    assert (d / "sec.tex").is_symlink() and os.readlink(d / "sec.tex") == str(target)
+    assert f"\\pdfmark[id={ins['id']}," in target.read_text()
+    assert os.stat(target).st_mode & 0o777 == 0o640
+    assert [f for f in os.listdir(shared) if f != "sec.tex"] == []  # no temp file left behind
 
 
 @needs_tex

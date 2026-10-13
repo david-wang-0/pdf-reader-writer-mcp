@@ -19,6 +19,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -285,7 +286,9 @@ class Source:
 
 
 def _write(path: str, text: str, crlf: bool) -> None:
-    """Replace ``path`` atomically, keeping its mode bits."""
+    """Replace ``path`` atomically, keeping its mode bits; a symlink stays one and its
+    target is replaced."""
+    path = os.path.realpath(path)
     mode = stat.S_IMODE(os.stat(path).st_mode)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix="." + os.path.basename(path) + ".")
     try:
@@ -616,9 +619,17 @@ class _Rec:
     marked: str = ""
 
 
+Probe = tuple[int, float, float]  # page, x, y (rounded) of a SyncTeX lookup
+
+
 class _Sync:
-    def __init__(self, path: str, doc: pymupdf.Document, stx: str) -> None:
-        self.path, self.doc = path, doc
+    """One pass over the PDF and its sources. With ``plan`` it changes nothing and only
+    collects the SyncTeX lookups it would need in ``misses``; ``cache`` holds the answers."""
+
+    def __init__(self, path: str, doc: pymupdf.Document, stx: str,
+                 cache: dict[Probe, list[tuple[str, int]]], plan: bool = False) -> None:
+        self.path, self.doc, self.cache, self.plan = path, doc, cache, plan
+        self.misses: set[Probe] = set()
         inputs = synctex_inputs(stx)
         if not inputs:
             raise ValueError(f"{stx} names no input files")
@@ -654,6 +665,8 @@ class _Sync:
         src.edits.append((s, e, text, next(self.seq)))
 
     def _fresh(self) -> str:
+        if self.plan:
+            return "plan"  # never written; keeps the ids for the real pass
         while True:
             i = secrets.token_hex(4)
             if i not in self.ids:
@@ -723,6 +736,8 @@ class _Sync:
                 self.insert(r, self._fresh(), new=True)
             if r.xref in self.synced:
                 done.add(self.synced[r.xref])
+        if self.plan:
+            return self.report
         # Only deletions made through our tools propagate: an id merely absent from the PDF
         # may come from a build that read the sources before the sync that added it.
         self.delete({i for i in recorded if i not in pdf_ids})
@@ -735,7 +750,13 @@ class _Sync:
         return self.report
 
     def _locate(self, r: _Rec) -> list[tuple[Source, int]]:
-        hits = synctex_edit(self.path, r.page, r.probe.x, r.probe.y)
+        key = (r.page, round(r.probe.x, 1), round(r.probe.y, 1))
+        if key not in self.cache:
+            if self.plan:
+                self.misses.add(key)
+                return []
+            self.cache[key] = synctex_edit(self.path, *key)  # added or moved since the plan
+        hits = self.cache[key]
         return [(self.srcs[f], n) for f, n in hits if f in self.srcs]
 
     def _opts(self, r: _Rec, nid: str, style: bool) -> list[tuple[str, str]]:
@@ -894,12 +915,30 @@ class _Sync:
 def sync(path: str) -> dict[str, Any]:
     """Write the PDF's highlights and notes into its LaTeX sources as pdfnotes macros,
     bring changed ones up to date and drop the ones deleted through ``delete_thread``
-    (recorded in the catalog), all under one exclusive
-    lock on the PDF. The annotations written get /NM ``pdfnotes:<id>``, saved
-    incrementally."""
+    (recorded in the catalog). The annotations written get /NM ``pdfnotes:<id>``,
+    saved incrementally.
+
+    The SyncTeX lookups are slow (one process each), so they are planned under a
+    shared lock and run in parallel with no lock held. The sync itself then runs
+    from fresh state under the exclusive lock, with only the lookups for marks
+    added or moved in between left to do there."""
     path = os.path.abspath(path)
-    with pdf._open(path, write=True) as doc:
+    with pdf._open(path) as doc:
         stx = synctex_file(path)
         if stx is None:
             return {"source": None, "reason": "no SyncTeX file next to the PDF (build with -synctex=1)"}
-        return _Sync(path, doc, stx).run()
+        plan = _Sync(path, doc, stx, {}, plan=True)
+        plan.run()
+    cache = lookup(path, plan.misses)
+    with pdf._open(path, write=True) as doc:
+        stx = synctex_file(path) or stx
+        return _Sync(path, doc, stx, cache).run()
+
+
+def lookup(path: str, probes: set[Probe]) -> dict[Probe, list[tuple[str, int]]]:
+    """``synctex_edit`` for each probe, in parallel; the CLI answers one ``-o`` per call."""
+    keys = sorted(probes)
+    if not keys:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1, len(keys))) as ex:
+        return dict(zip(keys, ex.map(lambda k: synctex_edit(path, *k), keys)))

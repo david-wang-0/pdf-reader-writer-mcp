@@ -129,8 +129,9 @@ when set), each with `irt` (0 when none), `quads` (`[]` for non-markup) and `rec
 
 **`sync`** `{path}`
 Writes the PDF's highlights and notes into its LaTeX sources as `\pdfmark`/`\pdfnote`
-macros, as the MCP `sync_to_source` does (README, "LaTeX sources"), under one exclusive
-lock on the PDF. → `{source, inserted, updated, removed, fallback, skipped}`: `source` is
+macros, as the MCP `sync_to_source` does (README, "LaTeX sources"). It plans under a
+shared lock, runs the SyncTeX lookups with no lock held, and edits under the exclusive
+lock from fresh state, so other writers wait only for that last step. → `{source, inserted, updated, removed, fallback, skipped}`: `source` is
 the main `.tex` file; `inserted`, `updated`, `removed` and `fallback` are lists of
 `{id, file, line, macro}` (`updated` adds `changed`, the keys rewritten; `fallback` adds
 `text`, the marked text); `skipped` lists `{xref, page, subtype, reason}`. Files are

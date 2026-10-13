@@ -78,6 +78,10 @@ It needs a SyncTeX file next to the PDF (build with `-synctex=1`), which maps
 each mark to its source line, and `\usepackage{pdfnotes}` in the preamble. Only
 `.tex` files in the main file's directory and below are edited, never the TeX
 tree. Each changed file is replaced atomically, with its mode and line endings.
+A symlinked `.tex` stays a symlink, and its target is replaced. The SyncTeX
+lookups (one `synctex` process per mark) run in parallel without the PDF's lock.
+The exclusive lock is held only while the sync reads the PDF afresh and writes
+the sources, so a mark made meanwhile does not time out.
 
 The round trip is idempotent. Sync stamps each annotation it wrote with
 `/NM pdfnotes:<id>`. A rebuild re-emits the marks with the same `/NM`, author,
