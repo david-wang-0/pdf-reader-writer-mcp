@@ -259,8 +259,14 @@ def test_list_adds_geometry_to_the_mcp_records(sample):
     assert entry["irt"] == 0 and entry["quads"] == m["quads"] and len(entry["rect"]) == 4
 
 
+def test_sync_reports_a_missing_synctex_file(sample):
+    assert call("sync", path=sample) == {"source": None,
+                                         "reason": "no SyncTeX file next to the PDF (build with -synctex=1)"}
+    assert error("sync", path=sample, page=1) == "unknown field: page"
+
+
 def test_ping_and_request_errors():
-    assert call("ping") == {"version": 1}
+    assert call("ping") == {"version": 2}
     assert edit.handle([1]) == {"id": None, "ok": False, "error": "bad request: not a JSON object"}
     assert edit.handle({"op": "ping"})["error"] == "bad request: id must be an integer"
     assert error("ping", extra=1) == "unknown field: extra"
@@ -292,7 +298,7 @@ def test_process_protocol(sample):
     assert p.returncode == 0
     out = [json.loads(l) for l in p.stdout.splitlines()]
     assert [o["id"] for o in out] == [1, None, 2, 3]  # in order, blank lines skipped
-    assert out[0]["result"] == {"version": 1} and out[1]["error"].startswith("bad request:")
+    assert out[0]["result"] == {"version": 2} and out[1]["error"].startswith("bad request:")
     assert out[3]["result"][0]["xref"] == out[2]["result"]["xref"]
 
 

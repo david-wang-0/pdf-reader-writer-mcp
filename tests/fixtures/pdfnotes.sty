@@ -1,0 +1,8 @@
+% Stub of the pdfnotes package for the tests: the macros typeset their marked
+% text and nothing else, and emit no annotations.
+\NeedsTeXFormat{LaTeX2e}[2020/10/01]
+\ProvidesPackage{pdfnotes}[2026/10/13 test stub]
+\NewDocumentCommand\pdfnote{O{}m}{}
+\NewDocumentCommand\pdfmark{O{}mm}{#2}
+\NewDocumentCommand\newpdfnote{mO{}}{\NewDocumentCommand#1{O{}m}{}}
+\NewDocumentCommand\newpdfmark{mO{}}{\NewDocumentCommand#1{O{}mm}{##2}}

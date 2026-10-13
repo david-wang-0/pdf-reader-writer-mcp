@@ -1,4 +1,4 @@
-# The edit service (`pdf-reader-writer-edit`), protocol v1
+# The edit service (`pdf-reader-writer-edit`), protocol v2
 
 A PDF viewer that lets the user mark PDFs (the VS Code viewer of
 [vscode-pdf-mcp](https://github.com/david-wang-0/vscode-pdf-mcp)) writes through this
@@ -92,7 +92,7 @@ Sets `/Contents` and/or the colour in place and stamps the modification date.
 → `{xref}`. A `style` different from the current one recreates the annotation with
 the same quads, note, author, colour (unless `color` is given) and creation date, and a
 new modification date. The direct replies' `/IRT` is re-pointed to the new xref,
-and the result is `{xref: <new>}`. `style` on a non-markup annotation fails with
+and the result is `{xref: <new>}`. The new annotation keeps the /NM. `style` on a non-markup annotation fails with
 `xref N is a <Subtype>, not a text markup`. With `only_author`, the annotation's `/T`
 must equal it.
 
@@ -100,17 +100,22 @@ must equal it.
 Deletes the annotation, its Popup, and every reply to it, recursively. (PyMuPDF's own
 deletion drops only direct replies and orphans replies to replies.)
 → `{snapshots: [...]}` for the whole thread, parent first, ready for `restore`.
+The `pdfnotes` ids (/NM `pdfnotes:<id>`) in the thread are recorded in the catalog key
+`/PDFNotesDeleted`, an array of strings, in the same save. `sync` removes their macros
+from the LaTeX sources and clears the record. `remove_annotation` (MCP) records them too.
 
 **`snapshot`** `{path, xref}`
 → everything needed to recreate the annotation:
 `{xref, page, subtype, rect, quads, color, opacity, contents, author, irt, icon,
-created, modified}`. For a FileAttachment it also has
+created, modified, nm}`, where `nm` is the /NM (`""` when none). For a FileAttachment it also has
 `file: {name, desc, data_base64}`. `quads` is `[]` for non-markup, `irt` is `0` for
 no thread, and `color`, `opacity` and `icon` can be `null`.
 
 **`restore`** `{path, snapshots}`
 Recreates the snapshots in order. An `irt` that names an earlier snapshot in the
-list is remapped to its new xref, so a deleted thread comes back as a thread. All or
+list is remapped to its new xref, so a deleted thread comes back as a thread. Each
+annotation gets its `nm` back, and its `pdfnotes` id leaves `/PDFNotesDeleted`, so an
+undo after a `sync` puts the macro back with the same id. All or
 nothing: on any error, nothing is written. → `{xrefs: {"<old>": <new>, ...}}` (JSON
 object keys are strings). Restorable subtypes: Highlight, Underline, Squiggly,
 StrikeOut, Text, FileAttachment. Anything else fails with
@@ -122,7 +127,23 @@ StrikeOut, Text, FileAttachment. Anything else fails with
 xref`, plus `text` for markup, `file`/`bytes` for attachments, `reply_to` and `color`
 when set), each with `irt` (0 when none), `quads` (`[]` for non-markup) and `rect`.
 
-**`ping`** `{}` → `{version: 1}`.
+**`sync`** `{path}`
+Writes the PDF's highlights and notes into its LaTeX sources as `\pdfmark`/`\pdfnote`
+macros, as the MCP `sync_to_source` does (README, "LaTeX sources"), under one exclusive
+lock on the PDF. → `{source, inserted, updated, removed, fallback, skipped}`: `source` is
+the main `.tex` file; `inserted`, `updated`, `removed` and `fallback` are lists of
+`{id, file, line, macro}` (`updated` adds `changed`, the keys rewritten; `fallback` adds
+`text`, the marked text); `skipped` lists `{xref, page, subtype, reason}`. Files are
+relative to the main file's directory. Only ids recorded by `delete` (and the MCP
+`remove_annotation`) are removed from the sources, and only when they are not back in the
+PDF; the record is cleared either way. An id merely absent from the PDF deletes nothing. Without a SyncTeX file next to the PDF:
+`{source: null, reason: "no SyncTeX file next to the PDF (build with -synctex=1)"}`.
+Errors: `<main>.tex does not load the pdfnotes package: add \usepackage{pdfnotes} to its
+preamble`, `synctex not found on PATH (it comes with TeX Live)`.
+
+**`ping`** `{}` → `{version: 2}`. Version 2 added `sync`, the `nm` of snapshots (kept by
+`restore` and by a style change in `update`), and the deletion record of `delete`; the
+other fields are as in version 1.
 
 ## Colours
 

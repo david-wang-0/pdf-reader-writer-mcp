@@ -82,9 +82,10 @@ def _open(path: str, write: bool = False) -> Iterator[pymupdf.Document]:
     """The document, opened fresh under an flock on the file itself.
 
     Readers share the lock; a writer holds it exclusively and the document is
-    saved incrementally when the block exits without an exception. Nothing is
-    kept open across calls, so a write never works on stale bytes and writers in
-    other processes (the edit service, another MCP server) are never lost.
+    saved incrementally when the block exits without an exception and changed
+    something. Nothing is kept open across calls, so a write never works on
+    stale bytes and writers in other processes (the edit service, another MCP
+    server) are never lost.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(f"no such file: {path}")
@@ -93,7 +94,7 @@ def _open(path: str, write: bool = False) -> Iterator[pymupdf.Document]:
         doc = pymupdf.open(path)
         try:
             yield doc
-            if write:
+            if write and doc.is_dirty:
                 if not doc.can_save_incrementally():
                     raise RuntimeError("document cannot be saved incrementally (encrypted or repaired?)")
                 doc.saveIncr()
@@ -537,14 +538,19 @@ def delete_thread(doc: pymupdf.Document, xref: int) -> list[int]:
     """Delete ``xref`` and all its replies, replies first.
 
     PyMuPDF's delete_annot drops an annot's direct replies but leaves replies to
-    those replies pointing at nothing, so the whole thread is walked here."""
+    those replies pointing at nothing, so the whole thread is walked here. The
+    pdfnotes ids among them are recorded in the catalog for ``source.sync``."""
+    from . import source  # source imports this module, so not at the top
+
     xrefs = thread(doc, xref)
+    ids = [i for i in (source.nm_id(doc, x) for x in xrefs) if i]
     for x in reversed(xrefs):
         try:
             pg, annot, _ = find_annot(doc, x)
         except LookupError:
             continue  # already taken by delete_annot together with its parent
         pg.delete_annot(annot)
+    source.record_deleted(doc, ids)  # so that sync_to_source removes their macros
     return xrefs
 
 
