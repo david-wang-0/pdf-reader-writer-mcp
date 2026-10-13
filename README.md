@@ -65,7 +65,9 @@ and re-render when it changes, so there is no reload step.
 
 Marks in a PDF built from LaTeX vanish when it is rebuilt. `sync_to_source`
 carries them into the sources as macros of the `pdfnotes` package (in
-`latex/`), which turns them back into PDF annotations on every build:
+`latex/`), which turns them back into PDF annotations on every build. Every
+author's marks are carried, yours, the model's and co-authors', each with its
+`author=`:
 
 - a highlight, underline, squiggle or strike-out becomes
   `\pdfmark[id=…,author=…,color=#rrggbb,style=…]{marked text}{note}` around the
