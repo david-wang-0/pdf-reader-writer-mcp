@@ -109,6 +109,9 @@ def update(path: str, xref: int, note: str | None = None, color: str | None = No
                                  info.get("title", ""), created=info.get("creationDate") or None,
                                  modified=now, opacity=annot.opacity if 0 <= annot.opacity < 1 else None)
             new_xref = new.xref
+            nm = doc.xref_get_key(xref, "NM")
+            if nm[0] == "string":  # the same annotation to sync_to_source
+                doc.xref_set_key(new_xref, "NM", pymupdf.get_pdf_str(nm[1]))
             # Re-point the replies first: delete_annot would take them with the old annot.
             for p in doc:
                 for a in p.annots():
@@ -147,6 +150,7 @@ def _snapshot(doc: pymupdf.Document, xref: int) -> dict[str, Any]:
         "icon": icon[1].lstrip("/") if icon[0] == "name" else None,
         "created": info.get("creationDate", ""),
         "modified": info.get("modDate", ""),
+        "nm": nm[1] if (nm := doc.xref_get_key(xref, "NM"))[0] == "string" else "",
     }
     if kind == pymupdf.PDF_ANNOT_FILE_ATTACHMENT:
         fi = a.file_info
@@ -207,12 +211,15 @@ def _restore_one(doc: pymupdf.Document, s: dict[str, Any], irt: int) -> pymupdf.
     if irt:
         a.set_irt_xref(irt)
         a.update()
+    if s.get("nm"):
+        doc.xref_set_key(a.xref, "NM", pymupdf.get_pdf_str(s["nm"]))
     return a
 
 
 def restore(path: str, snapshots: list) -> dict[str, Any]:
     """Recreate ``snapshots`` in order, re-pointing replies at the recreated
-    parents; all or nothing."""
+    parents, with their /NM; all or nothing. Their pdfnotes ids are no longer
+    deleted."""
     mapping: dict[int, int] = {}
     with pdf._open(path, write=True) as doc:
         for s in snapshots:
@@ -221,6 +228,7 @@ def restore(path: str, snapshots: list) -> dict[str, Any]:
             irt = s.get("irt") or 0
             a = _restore_one(doc, s, mapping.get(irt, irt))
             mapping[s["xref"]] = a.xref
+        source.clear_deleted(doc, {source.nm_id(doc, x) for x in mapping.values()} - {""})
     return {"xrefs": {str(k): v for k, v in mapping.items()}}
 
 

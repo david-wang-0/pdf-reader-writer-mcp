@@ -538,14 +538,19 @@ def delete_thread(doc: pymupdf.Document, xref: int) -> list[int]:
     """Delete ``xref`` and all its replies, replies first.
 
     PyMuPDF's delete_annot drops an annot's direct replies but leaves replies to
-    those replies pointing at nothing, so the whole thread is walked here."""
+    those replies pointing at nothing, so the whole thread is walked here. The
+    pdfnotes ids among them are recorded in the catalog for ``source.sync``."""
+    from . import source  # source imports this module, so not at the top
+
     xrefs = thread(doc, xref)
+    ids = [i for i in (source.nm_id(doc, x) for x in xrefs) if i]
     for x in reversed(xrefs):
         try:
             pg, annot, _ = find_annot(doc, x)
         except LookupError:
             continue  # already taken by delete_annot together with its parent
         pg.delete_annot(annot)
+    source.record_deleted(doc, ids)  # so that sync_to_source removes their macros
     return xrefs
 
 

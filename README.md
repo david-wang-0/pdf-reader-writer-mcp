@@ -87,10 +87,22 @@ sync rewrites only that part of the macro. Shorthands declared with
 `\newpdfnote{\name}` or `\newpdfmark{\name}` are read like the macros they
 stand for, and a hand-written macro without `id=` gets the id the package gave it.
 
-Deletions propagate only from a build with the notes active: the PDF has the
-Info key `/PDFNotes`, or at least one `pdfnotes:` annotation. Then a macro whose
-id is gone from the PDF is removed: a `\pdfnote` with the space before it, and a
-`\pdfmark` unwrapped to its marked text.
+Deletions propagate only when they are made through this package:
+`remove_annotation`, or the edit service's `delete` (the VS Code viewer). Those
+record the `pdfnotes` ids of the deleted thread in the PDF itself, under the
+catalog key `/PDFNotesDeleted`, in the same save. The next sync removes their
+macros, with their replies: a `\pdfnote` with the space before it, and a
+`\pdfmark` unwrapped to its marked text. Then it clears the record. An id that
+is back in the PDF (an undo, or a build from older sources) is kept and cleared
+from the record. Undo through the edit service's `restore` brings back the
+annotation with its id and clears the record, so the next sync writes the
+macro back with the same id.
+
+An id that is merely missing from the PDF deletes nothing. A build that read the
+sources before a sync added a mark finishes without it, and that must not cost
+the mark. The safe failure is this: a mark deleted in Okular is not recorded,
+so the next build brings it back. Delete it through the VS Code viewer or the
+tools instead, or delete its macro in the source.
 
 Colours are compared only when the source gives `#rrggbb` or a palette name
 (`blue`, `yellow`, …), within 1/255. Other xcolor names and expressions such as
@@ -165,6 +177,8 @@ Any other client: run `pdf-reader-writer-mcp` as a stdio server named `pdf-reade
   retried by its first six words.
 - **Highlighted text** is recovered from the annotation's quads, so it can pick
   up a neighbouring word on tight line spacing.
+- **The real `pdfnotes` needs two LaTeX runs.** Mark positions come from the
+  `.aux`, like `\ref`. latexmk and LaTeX Workshop rerun by themselves.
 - **Editors and `sync_to_source`.** A `.tex` file open in an editor with unsaved
   edits gets a conflict when sync changes it on disk. Save the sources before a
   sync, and save the PDF in Okular too.

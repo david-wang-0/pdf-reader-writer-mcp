@@ -192,26 +192,157 @@ def test_sync_update_keeps_the_other_keys(fake):
     assert source.sync(path)["updated"] == []
 
 
-def test_sync_deletes_only_when_notes_are_active(fake):
-    tex_body = (PRE + "The quick \\pdfmark[id=gone,color=#ff0000]{brown {fox}}{n} jumps \\pdfnote[id=old]{x}\n"
-                "\\pdfnote[id=keep]{k}\n\\end{document}\n")
-    path, tex = fake(tex_body)
-    assert source.sync(path)["removed"] == []  # no pdfnotes annotation: maybe a build without notes
+def deleted(path):
+    with pymupdf.open(path) as doc:
+        return source.deleted_ids(doc)
+
+
+THREAD = (PRE + "The quick \\pdfmark[id=m1]{brown fox}{n} \\pdfnote[id=r1,replyto=m1]{re} jumps "
+          "\\pdfnote[id=n1]{x}\n\\end{document}\n")
+
+
+def thread_pdf(fake):
+    path, tex = fake(THREAD)
+    m = pdf.mark_text(path, 1, "brown fox", note="n")["xref"]
+    r = pdf.add_note(path, None, "re", reply_to=m)["xref"]
+    n = pdf.add_note(path, 1, "x")["xref"]
+    for x, i in ((m, "m1"), (r, "r1"), (n, "n1")):
+        set_nm(path, x, "pdfnotes:" + i)
+    return path, tex, m, n
+
+
+@pytest.mark.parametrize("how", ["remove_annotation", "edit delete"])
+def test_recorded_delete_removes_the_macros_and_clears_the_record(fake, how):
+    path, tex, m, _ = thread_pdf(fake)
+    pdf.remove_annotation(path, m) if how == "remove_annotation" else edit.delete(path, m)
+    assert deleted(path) == ["m1", "r1"]  # the whole thread
+    r = source.sync(path)
+    assert [x["id"] for x in r["removed"]] == ["m1", "r1"]
+    assert "The quick brown fox jumps \\pdfnote[id=n1]{x}\n" in tex.read_text()
+    assert deleted(path) == []
+
+
+def test_replies_go_with_their_parent_even_unrecorded(fake):
+    path, tex, m, _ = thread_pdf(fake)
+    with pdf._open(path, write=True) as doc:
+        pg, annot, _ = pdf.find_annot(doc, m)
+        pg.delete_annot(annot)  # takes the direct reply along, unrecorded
+        source.record_deleted(doc, ["m1"])
+    assert [x["id"] for x in source.sync(path)["removed"]] == ["m1", "r1"]
+
+
+def test_unrecorded_absence_deletes_nothing(fake):
+    """The race: a PDF built from the sources before a sync added an id says active but lacks it."""
+    path, tex = fake(PRE + "The quick \\pdfmark[id=new]{brown fox}{} \\pdfnote[id=keep]{k}\n\\end{document}\n")
     k = pdf.add_note(path, 1, "k")["xref"]
     set_nm(path, k, "pdfnotes:keep")
-    r = source.sync(path)
-    assert sorted(x["id"] for x in r["removed"]) == ["gone", "old"]
-    assert "The quick brown {fox} jumps\n\\pdfnote[id=keep]{k}\n" in tex.read_text()
-
-
-def test_notes_active_by_info_key(fake):
-    path, _ = fake(PRE + "x\n\\end{document}\n")
     with pdf._open(path, write=True) as doc:
-        assert not source.notes_active(doc)
-        doc.set_metadata({"producer": "t"})  # makes sure there is an Info dictionary
+        doc.set_metadata({"producer": "pdfTeX"})
         doc.xref_set_key(int(doc.xref_get_key(-1, "Info")[1].split()[0]), "PDFNotes", "(active)")
-    with pdf._open(path) as doc:
-        assert source.notes_active(doc)
+    before = tex.read_text()
+    assert source.sync(path)["removed"] == []
+    assert tex.read_text() == before
+
+
+def test_recorded_but_present_again_is_kept_and_cleared(fake):
+    path, tex, _, _ = thread_pdf(fake)
+    with pdf._open(path, write=True) as doc:
+        source.record_deleted(doc, ["n1", "elsewhere"])
+    before = tex.read_text()
+    assert source.sync(path)["removed"] == []
+    assert tex.read_text() == before and deleted(path) == []
+
+
+def test_restore_clears_the_record(fake):
+    path, tex, m, n = thread_pdf(fake)
+    snaps = edit.delete(path, m)["snapshots"]
+    edit.delete(path, n)
+    assert deleted(path) == ["m1", "r1", "n1"]
+    xrefs = edit.restore(path, snaps)["xrefs"]
+    assert deleted(path) == ["n1"]
+    assert nm(path, xrefs[str(m)]) == "pdfnotes:m1"
+
+
+def test_deleting_other_annotations_records_nothing(fake):
+    path, _ = fake(PRE + "x\n\\end{document}\n")
+    x = pdf.mark_text(path, 1, "brown fox")["xref"]
+    before = Path(path).read_bytes()
+    pdf.remove_annotation(path, x)
+    with pymupdf.open(path) as doc:
+        assert doc.xref_get_key(doc.pdf_catalog(), source.DELETED_KEY)[0] == "null"
+    assert len(Path(path).read_bytes()) > len(before)
+
+
+def test_deleted_ids_round_trip():
+    doc = pymupdf.open()
+    doc.new_page()
+    source.record_deleted(doc, ["a(b\\c", "ü", "✓", "x y", "a(b\\c"])
+    assert source.deleted_ids(doc) == ["a(b\\c", "ü", "✓", "x y"]
+    source.clear_deleted(doc, {"ü", "x y"})
+    assert source.deleted_ids(doc) == ["a(b\\c", "✓"]
+
+
+# --- the viewer's undo: delete, update and restore around syncs ---
+
+UNDO = PRE + LINES[0] + "\n" + LINES[1] + "\n\\end{document}\n"
+
+
+def marked_up(fake):
+    """The fake paper with a mark, a note and a mark with a reply, synced once."""
+    path, tex = fake(UNDO)
+    a = pdf.mark_text(path, 1, "brown fox", note="first", style="underline")["xref"]
+    n = pdf.add_note(path, 1, "a note", near_text="second line")["xref"]
+    b = pdf.mark_text(path, 1, "lazy dog", note="re", note_in_margin=True)["xref"]
+    assert len(source.sync(path)["inserted"]) == 4
+    return path, tex, [a, n, b]
+
+
+def quiet(r):
+    return all(r[k] == [] for k in ("inserted", "updated", "removed", "fallback", "skipped"))
+
+
+def test_undo_delete_after_sync_reinserts_with_the_same_ids(fake):
+    path, tex, xrefs = marked_up(fake)
+    synced = tex.read_text()
+    snaps = [edit.delete(path, x)["snapshots"] for x in xrefs]
+    assert len(source.sync(path)["removed"]) == 4
+    assert tex.read_text() == UNDO and deleted(path) == []
+    for s in snaps:
+        edit.restore(path, s)
+    r = source.sync(path)
+    assert len(r["inserted"]) == 4 and tex.read_text() == synced  # same ids, words, replyto
+    before = Path(path).read_bytes()
+    assert quiet(source.sync(path)) and tex.read_text() == synced and Path(path).read_bytes() == before
+
+
+def test_undo_update_after_sync_restores_the_note(fake):
+    path, tex, (a, _, _) = marked_up(fake)
+    synced = tex.read_text()
+    edit.update(path, a, note="second")
+    assert source.sync(path)["updated"][0]["changed"] == ["note"]
+    assert tex.read_text() == synced.replace("{brown fox}{first}", "{brown fox}{second}")
+    edit.update(path, a, note="first")
+    source.sync(path)
+    assert tex.read_text() == synced
+
+
+def test_style_change_keeps_the_id(fake):
+    path, tex, (a, _, _) = marked_up(fake)
+    synced = tex.read_text()
+    new = edit.update(path, a, style="highlight")["xref"]
+    r = source.sync(path)
+    assert r["inserted"] == [] and r["updated"][0]["changed"] == ["style"]
+    assert nm(path, new).startswith("pdfnotes:")
+    assert tex.read_text() == synced.replace(",style=underline]{brown fox}", ",style=highlight]{brown fox}")
+
+
+def test_undo_delete_before_sync_changes_nothing(fake):
+    path, tex, xrefs = marked_up(fake)
+    synced = tex.read_text()
+    for x in xrefs:
+        edit.restore(path, edit.delete(path, x)["snapshots"])
+    assert quiet(source.sync(path))
+    assert tex.read_text() == synced and deleted(path) == []
 
 
 def test_sync_adopts_an_implicit_id(fake):
@@ -292,10 +423,12 @@ and it goes on for a while on a second source line.
 
 
 def build(d, sty=STUB):
+    """pdflatex in ``d``; twice for the real package, whose positions come from the .aux."""
     shutil.copy(sty, d / "pdfnotes.sty")
-    p = subprocess.run(["pdflatex", "-synctex=1", "-interaction=nonstopmode", "doc.tex"], cwd=d,
-                       capture_output=True, text=True, timeout=120)
-    assert p.returncode == 0, p.stdout[-2000:]
+    for _ in range(1 if sty == STUB else 2):
+        p = subprocess.run(["pdflatex", "-synctex=1", "-interaction=nonstopmode", "doc.tex"], cwd=d,
+                           capture_output=True, text=True, timeout=120)
+        assert p.returncode == 0, p.stdout[-2000:]
     return str(d / "doc.pdf")
 
 
@@ -359,6 +492,22 @@ def test_tex_without_package_or_synctex(paper):
     assert source.sync(path)["source"] is None
 
 
+@needs_tex
+def test_tex_undo_delete_after_sync(paper):
+    path = build(paper)
+    m = pdf.mark_text(path, 1, "own words", note="and a reply", note_in_margin=True)["xref"]
+    source.sync(path)
+    synced = (paper / "sec.tex").read_text()
+    snaps = edit.delete(path, m)["snapshots"]
+    assert len(source.sync(path)["removed"]) == 2
+    assert (paper / "sec.tex").read_text() == "The section file has its own words.\n"
+    edit.restore(path, snaps)
+    assert len(source.sync(path)["inserted"]) == 2
+    assert (paper / "sec.tex").read_text() == synced
+    assert quiet(source.sync(path))
+    build(paper)
+
+
 # --- with the real package ---
 
 @needs_tex
@@ -381,7 +530,10 @@ def test_package_round_trip(paper):
     again = source.sync(path)
     assert again["inserted"] == again["updated"] == again["removed"] == again["fallback"] == []
     gone = next(a["xref"] for a in pdf.annotations(path) if a["note"] == "a note")
-    pdf.remove_annotation(path, gone)
+    edit.delete(path, gone)
     r = source.sync(path)
     assert [x["macro"] for x in r["removed"]] == ["pdfnote"]
     assert "a note" not in (paper / "doc.tex").read_text()
+    path = build(paper, REAL)  # a rebuild does not bring it back, and the mark stays
+    assert quiet(source.sync(path))
+    assert [a["note"] for a in pdf.annotations(path) if a["type"] != "Text"] == ["a mark"]

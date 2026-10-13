@@ -528,12 +528,57 @@ def loads_package(text: str) -> bool:
     return False
 
 
-def notes_active(doc: pymupdf.Document) -> bool:
-    """Whether the build emitted its notes: the Info key /PDFNotes, or else at least
-    one ``pdfnotes:`` annotation."""
-    if doc.xref_get_key(-1, "Info/PDFNotes")[0] != "null":
-        return True
-    return any(a.info.get("id", "").startswith(NM_PREFIX) for pg in doc for a in pg.annots())
+# --- deletions recorded in the PDF ---
+
+DELETED_KEY = "PDFNotesDeleted"  # in the catalog: ids deleted through our tools, not yet synced
+_PDF_STRING = re.compile(r"\((?:\\[0-7]{1,3}|\\.|[^\\()])*\)|<[0-9A-Fa-f\s]*>", re.S)
+
+
+_PDF_ESC = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f"}
+
+
+def _pdf_text(token: str) -> str:
+    """A PDF string token, literal ``(...)`` or hex ``<...>``, as text."""
+    if token.startswith("<"):
+        b = bytes.fromhex("".join(token[1:-1].split()))
+        return b[2:].decode("utf-16-be") if b[:2] == b"\xfe\xff" else b.decode("latin-1")
+
+    def one(m: re.Match[str]) -> str:
+        e = m.group(1)
+        return chr(int(e, 8)) if e[0].isdigit() else _PDF_ESC.get(e, e)
+    return re.sub(r"\\([0-7]{1,3}|.)", one, token[1:-1], flags=re.S)
+
+
+def deleted_ids(doc: pymupdf.Document) -> list[str]:
+    """The pdfnotes ids deleted through ``delete_thread`` and not yet synced."""
+    kind, value = doc.xref_get_key(doc.pdf_catalog(), DELETED_KEY)
+    return [_pdf_text(t.group()) for t in _PDF_STRING.finditer(value)] if kind == "array" else []
+
+
+def _store_deleted(doc: pymupdf.Document, ids: list[str]) -> None:
+    value = "[" + " ".join(pymupdf.get_pdf_str(i) for i in ids) + "]" if ids else "null"
+    doc.xref_set_key(doc.pdf_catalog(), DELETED_KEY, value)
+
+
+def record_deleted(doc: pymupdf.Document, ids: list[str]) -> None:
+    """Add ``ids`` to the catalog's list of deleted pdfnotes ids, saved with the deletion."""
+    known = deleted_ids(doc)
+    new = [i for i in dict.fromkeys(ids) if i not in known]
+    if new:
+        _store_deleted(doc, known + new)
+
+
+def clear_deleted(doc: pymupdf.Document, ids: list[str] | set[str]) -> None:
+    known = deleted_ids(doc)
+    left = [i for i in known if i not in ids]
+    if left != known:
+        _store_deleted(doc, left)
+
+
+def nm_id(doc: pymupdf.Document, xref: int) -> str:
+    """The pdfnotes id in an annotation's /NM, or ""."""
+    kind, nm = doc.xref_get_key(xref, "NM")
+    return nm[len(NM_PREFIX):] if kind == "string" and nm.startswith(NM_PREFIX) else ""
 
 
 def _hex(rgb: tuple[float, ...]) -> str:
@@ -659,7 +704,8 @@ class _Sync:
         recs = self.records()
         pdf_ids = {a.info.get("id", "")[len(NM_PREFIX):] for pg in self.doc for a in pg.annots()
                    if a.info.get("id", "").startswith(NM_PREFIX)}
-        self.ids |= pdf_ids
+        recorded = deleted_ids(self.doc)
+        self.ids |= pdf_ids | set(recorded)
         done: set[str] = set()
         for r in recs:
             nid = r.nm[len(NM_PREFIX):] if r.nm.startswith(NM_PREFIX) else ""
@@ -677,8 +723,10 @@ class _Sync:
                 self.insert(r, self._fresh(), new=True)
             if r.xref in self.synced:
                 done.add(self.synced[r.xref])
-        if notes_active(self.doc):
-            self.delete(pdf_ids)
+        # Only deletions made through our tools propagate: an id merely absent from the PDF
+        # may come from a build that read the sources before the sync that added it.
+        self.delete({i for i in recorded if i not in pdf_ids})
+        clear_deleted(self.doc, recorded)
         for src in self.srcs.values():
             if src.edits:
                 new = src.result()
@@ -816,26 +864,37 @@ class _Sync:
             p = m.bracket[0] + 1
             self._edit(src, p, p, ",".join(new) + ("," if m.opts else ""))
 
-    def delete(self, pdf_ids: set[str]) -> None:
-        """Remove the macros whose explicit id is not in the PDF: a ``\\pdfnote`` with the
+    def delete(self, gone: set[str]) -> None:
+        """Remove the macros of the deleted ids and their replies: a ``\\pdfnote`` with the
         space before it, a ``\\pdfmark`` unwrapped to its marked text."""
-        for src in self.srcs.values():
-            for m in src.macros:
-                if not m.id or m.id in pdf_ids:
-                    continue
-                if m.kind == "note":
-                    s = m.start - 1 if src.text[m.start - 1:m.start] == " " else m.start
-                    self._edit(src, s, m.end, "")
-                else:
-                    self._edit(src, m.start, m.args[0][0], "")
-                    self._edit(src, m.args[0][1], m.end, "")
-                self.report["removed"].append({"id": m.id, "file": self._rel(src.path),
-                                               "line": src.line_of(m.start), "macro": m.name})
+        macros = [(src, m) for src in self.srcs.values() for m in src.macros]
+        dead: set[int] = set()
+        grew = True
+        while grew:
+            grew = False
+            for src, m in macros:
+                if id(m) not in dead and (m.id in gone or (m.opt("replyto") or "") in gone):
+                    dead.add(id(m))
+                    if m.id:
+                        gone = gone | {m.id}
+                    grew = True
+        for src, m in macros:
+            if id(m) not in dead:
+                continue
+            if m.kind == "note":
+                s = m.start - 1 if src.text[m.start - 1:m.start] == " " else m.start
+                self._edit(src, s, m.end, "")
+            else:
+                self._edit(src, m.start, m.args[0][0], "")
+                self._edit(src, m.args[0][1], m.end, "")
+            self.report["removed"].append({"id": m.id or "", "file": self._rel(src.path),
+                                           "line": src.line_of(m.start), "macro": m.name})
 
 
 def sync(path: str) -> dict[str, Any]:
     """Write the PDF's highlights and notes into its LaTeX sources as pdfnotes macros,
-    bring changed ones up to date and drop deleted ones, all under one exclusive
+    bring changed ones up to date and drop the ones deleted through ``delete_thread``
+    (recorded in the catalog), all under one exclusive
     lock on the PDF. The annotations written get /NM ``pdfnotes:<id>``, saved
     incrementally."""
     path = os.path.abspath(path)
