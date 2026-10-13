@@ -1,0 +1,1111 @@
+%% pdfnotes.sty -- todonotes notes and marks that are also PDF annotations.
+%%
+%% A note typeset with todonotes is also a Text (sticky note) annotation, and a mark over
+%% typeset text is also a Highlight, Underline, Squiggly or StrikeOut annotation carrying
+%% the note, so every PDF viewer lists them (author, colour, note) and every tool that
+%% reads annotations sees them. See README.md next to this file for the interface.
+%%
+%% Part of pdf-reader-writer-mcp (https://github.com/david-wang-0/pdf-reader-writer-mcp).
+%% MIT License.
+\NeedsTeXFormat{LaTeX2e}[2022-11-01]
+\ProvidesExplPackage{pdfnotes}{2026-10-13}{0.1}
+  {todonotes notes and marks that are also PDF annotations}
+
+% ---- options ---------------------------------------------------------------------------
+% disable: no notes and no annotations from this package (marks typeset their text
+% plainly); also passed on to todonotes when that is not loaded yet. final: the same, but
+% only as an option of this package (a class option `final', as IEEEtran and others take,
+% does not switch the notes off).
+\bool_new:N \g__pdfnotes_disable_bool
+\DeclareOption { disable } { \bool_gset_true:N \g__pdfnotes_disable_bool }
+\DeclareOption { final } { }
+\DeclareOption*
+  { \PackageWarning { pdfnotes } { Unknown~option~`\CurrentOption'~ignored } }
+\ProcessOptions \scan_stop:
+\@ifpackagewith { pdfnotes } { final }
+  { \bool_gset_true:N \g__pdfnotes_disable_bool } { }
+
+\@ifpackageloaded { todonotes } { }
+  {
+    \bool_if:NT \g__pdfnotes_disable_bool
+      { \PassOptionsToPackage { disable } { todonotes } }
+  }
+\RequirePackage { todonotes }
+\RequirePackage { xcolor }
+\RequirePackage { zref-savepos }
+\RequirePackage { zref-abspage }
+
+% Width and line height inside a todonotes box, recorded with the note's start position.
+\zref@newprop { pdfnoteswd } [ 0 ] { \number \linewidth }
+\zref@newprop { pdfnotesht } [ 0 ] { \number \ht \strutbox }
+\zref@newprop { pdfnotesdp } [ 0 ] { \number \dp \strutbox }
+
+% ---- variables -------------------------------------------------------------------------
+\int_new:N \g__pdfnotes_k_int          % internal sequence number of notes and marks
+\int_new:N \g__pdfnotes_b_int          % interword positions of the current mark
+\int_new:N \g__pdfnotes_name_int       % XeTeX: names of annotation objects
+\bool_new:N \g__pdfnotes_used_bool     % a note or mark was seen: record page corners
+\bool_new:N \g__pdfnotes_pdf_bool      % PDF output with a known engine
+\prop_new:N \g__pdfnotes_ids_prop      % id -> how often seen
+\prop_new:N \g__pdfnotes_refs_prop     % id -> reference of its (first) annotation
+\bool_new:N \l__pdfnotes_box_bool
+\bool_new:N \l__pdfnotes_note_bool
+\bool_new:N \l__pdfnotes_ok_bool
+\bool_new:N \l__pdfnotes_ign_bool
+\tl_new:N \l__pdfnotes_author_tl
+\tl_new:N \l__pdfnotes_color_tl
+\tl_new:N \l__pdfnotes_xcolor_tl
+\tl_new:N \l__pdfnotes_rgb_tl
+\tl_new:N \l__pdfnotes_kind_tl
+\tl_new:N \l__pdfnotes_id_tl
+\tl_new:N \l__pdfnotes_replyto_tl
+\tl_new:N \l__pdfnotes_prefix_tl
+\tl_new:N \l__pdfnotes_icon_tl
+\tl_new:N \l__pdfnotes_style_tl
+\tl_new:N \l__pdfnotes_textcolor_tl
+\tl_new:N \l__pdfnotes_notecolor_tl
+\tl_new:N \l__pdfnotes_todo_tl
+\tl_new:N \l__pdfnotes_unknown_tl
+\tl_new:N \l__pdfnotes_tmp_tl
+\tl_new:N \l__pdfnotes_model_tl
+\tl_new:N \l__pdfnotes_spec_tl
+\tl_new:N \l__pdfnotes_common_tl
+\tl_new:N \l__pdfnotes_dict_tl
+\tl_new:N \l__pdfnotes_text_tl
+\tl_new:N \l__pdfnotes_ref_tl
+\tl_new:N \l__pdfnotes_obj_tl
+\tl_new:N \l__pdfnotes_label_tl
+\seq_new:N \l__pdfnotes_seq
+\seq_new:N \l__pdfnotes_pts_seq
+\seq_new:N \l__pdfnotes_pages_seq
+\str_new:N \l__pdfnotes_str
+\int_new:N \l__pdfnotes_k_int
+\int_new:N \l__pdfnotes_page_int
+\int_new:N \l__pdfnotes_runs_int
+\int_new:N \l__pdfnotes_m_int
+\fp_new:N \l__pdfnotes_x_fp
+\fp_new:N \l__pdfnotes_y_fp
+\fp_new:N \l__pdfnotes_w_fp
+\fp_new:N \l__pdfnotes_h_fp
+\fp_new:N \l__pdfnotes_asc_fp
+\fp_new:N \l__pdfnotes_dsc_fp
+\fp_new:N \l__pdfnotes_bs_fp
+\fp_new:N \l__pdfnotes_lm_fp
+\fp_new:N \l__pdfnotes_lw_fp
+\fp_new:N \l__pdfnotes_Ls_fp
+\fp_new:N \l__pdfnotes_Le_fp
+\fp_new:N \l__pdfnotes_xe_fp
+\fp_new:N \l__pdfnotes_rx_fp      % the current run (line) of a mark
+\fp_new:N \l__pdfnotes_rX_fp
+\fp_new:N \l__pdfnotes_ry_fp
+\int_new:N \l__pdfnotes_rpage_int
+\bool_new:N \l__pdfnotes_rfirst_bool
+\bool_new:N \l__pdfnotes_ecol_bool
+\scan_new:N \s__pdfnotes_stop
+\int_new:N \l__pdfnotes_math_int
+\int_new:N \l__pdfnotes_bracket_int
+
+% ---- keys ------------------------------------------------------------------------------
+% Our keys; every other key is a todonotes option and goes on to \todo.
+\keys_define:nn { pdfnotes }
+  {
+    author    .tl_set:N   = \l__pdfnotes_author_tl ,
+    color     .tl_set:N   = \l__pdfnotes_color_tl ,
+    color     .initial:n  = orange ,
+    kind      .tl_set:N   = \l__pdfnotes_kind_tl ,
+    id        .tl_set:N   = \l__pdfnotes_id_tl ,
+    replyto   .tl_set:N   = \l__pdfnotes_replyto_tl ,
+    prefix    .tl_set:N   = \l__pdfnotes_prefix_tl ,
+    icon      .tl_set:N   = \l__pdfnotes_icon_tl ,
+    box       .bool_set:N = \l__pdfnotes_box_bool ,
+    box       .initial:n  = true ,
+    box       .default:n  = true ,
+    style     .choices:nn =
+      { highlight , underline , squiggly , strikeout }
+      {
+        \tl_set:Ne \l__pdfnotes_style_tl
+          {
+            \clist_item:nn { Highlight , Underline , Squiggly , StrikeOut }
+              { \l_keys_choice_int }
+          }
+      } ,
+    style     .initial:n  = highlight ,
+    textcolor .tl_set:N   = \l__pdfnotes_textcolor_tl ,
+    note      .bool_set:N = \l__pdfnotes_note_bool ,
+    note      .initial:n  = true ,
+    note      .default:n  = true ,
+    notecolor .tl_set:N   = \l__pdfnotes_notecolor_tl ,
+    todo      .code:n     = { \tl_put_right:Nn \l__pdfnotes_todo_tl { , #1 } } ,
+  }
+
+% Macro parameter characters (the # of color=#rrggbb) become ordinary characters, so a
+% key list can go into a definition.
+\cs_new_protected:Npn \__pdfnotes_safe:Nn #1#2
+  {
+    \tl_set:Nn #1 {#2}
+    \regex_replace_all:nnN { \cP\# } { \cO\# } #1
+  }
+
+% Defaults for every later note and mark, e.g. \pdfnotesetup{author=Alice}.
+\NewDocumentCommand \pdfnotesetup { m }
+  {
+    \__pdfnotes_safe:Nn \l__pdfnotes_tmp_tl {#1}
+    \keys_set:nV { pdfnotes } \l__pdfnotes_tmp_tl
+  }
+
+\cs_new_protected:Npn \__pdfnotes_set:n #1
+  {
+    \tl_clear:N \l__pdfnotes_todo_tl
+    \__pdfnotes_safe:Nn \l__pdfnotes_tmp_tl {#1}
+    \keys_set_known:nVN { pdfnotes } \l__pdfnotes_tmp_tl \l__pdfnotes_unknown_tl
+    \tl_if_empty:NF \l__pdfnotes_unknown_tl
+      { \tl_put_left:Nn \l__pdfnotes_unknown_tl { , } }
+    \__pdfnotes_color:
+  }
+\cs_generate_variant:Nn \keys_set_known:nnN { nV }
+\cs_generate_variant:Nn \keys_set:nn { nV }
+\cs_generate_variant:Nn \prop_gput:Nnn { NVn , NVV }
+\cs_generate_variant:Nn \prop_get:NnNTF { NV }
+\cs_generate_variant:Nn \prop_if_in:NnTF { NV }
+
+% ---- switched off? ---------------------------------------------------------------------
+\prg_new_conditional:Npnn \__pdfnotes_if_off: { TF , T , F , p }
+  {
+    \bool_lazy_or:nnTF
+      { \g__pdfnotes_disable_bool }
+      { \legacy_if_p:n { @todonotes@disabled } }
+      { \prg_return_true: } { \prg_return_false: }
+  }
+
+% ---- colour ----------------------------------------------------------------------------
+% \l__pdfnotes_xcolor_tl: a colour xcolor and todonotes understand; \l__pdfnotes_rgb_tl:
+% `r g b' for /C, each component rounded to 4 decimal places. A palette name (the colours
+% of pdf-reader-writer-mcp and the viewers: blue, yellow, green, orange, pink, purple,
+% red, cyan, grey, gray; lower case) gives the palette's RGB, and the box the xcolor
+% colour pdfnotes-<name> (xcolor's own blue, pink ... are left alone); color=#rrggbb gives
+% rr/255, gg/255, bb/255 (and the xcolor colour pdfnotes-RRGGBB); any other value is an
+% xcolor colour or expression, converted to RGB by xcolor.
+\prop_const_from_keyval:Nn \c__pdfnotes_palette_prop
+  {
+    blue = { 0.6 ~ 0.8 ~ 1 } ,
+    yellow = { 1 ~ 0.9 ~ 0.3 } ,
+    green = { 0.6 ~ 0.9 ~ 0.6 } ,
+    orange = { 1 ~ 0.7 ~ 0.4 } ,
+    pink = { 1 ~ 0.7 ~ 0.85 } ,
+    purple = { 0.8 ~ 0.7 ~ 1 } ,
+    red = { 0.9 ~ 0.3 ~ 0.3 } ,
+    cyan = { 0.55 ~ 0.95 ~ 0.95 } ,
+    grey = { 0.75 ~ 0.75 ~ 0.75 } ,
+    gray = { 0.75 ~ 0.75 ~ 0.75 } ,
+  }
+\prop_map_inline:Nn \c__pdfnotes_palette_prop
+  {
+    \tl_set:Nn \l__pdfnotes_tmp_tl {#2}
+    \tl_replace_all:Nnn \l__pdfnotes_tmp_tl { ~ } { , }
+    \exp_args:NnnV \definecolor { pdfnotes-#1 } { rgb } \l__pdfnotes_tmp_tl
+  }
+\cs_generate_variant:Nn \regex_extract_once:nnNTF { nV }
+\cs_new_protected:Npn \__pdfnotes_color:
+  {
+    \prop_get:NVNTF \c__pdfnotes_palette_prop \l__pdfnotes_color_tl \l__pdfnotes_rgb_tl
+      { \tl_set:Ne \l__pdfnotes_xcolor_tl { pdfnotes- \l__pdfnotes_color_tl } }
+      { \__pdfnotes_color_other: }
+  }
+\cs_new_protected:Npn \__pdfnotes_color_other:
+  {
+    \regex_extract_once:nVNTF { \A \s* [\#] ([0-9A-Fa-f]{6}) \s* \Z }
+      \l__pdfnotes_color_tl \l__pdfnotes_seq
+      {
+        \tl_set:Ne \l__pdfnotes_tmp_tl { \str_uppercase:f { \seq_item:Nn \l__pdfnotes_seq { 2 } } }
+        \tl_set:Ne \l__pdfnotes_xcolor_tl { pdfnotes- \l__pdfnotes_tmp_tl }
+        \exp_args:NV \__pdfnotes_define_html:nn \l__pdfnotes_xcolor_tl \l__pdfnotes_tmp_tl
+        \tl_set:Ne \l__pdfnotes_rgb_tl
+          {
+            \__pdfnotes_hex_component:Vn \l__pdfnotes_tmp_tl { 1 } \c_space_tl
+            \__pdfnotes_hex_component:Vn \l__pdfnotes_tmp_tl { 3 } \c_space_tl
+            \__pdfnotes_hex_component:Vn \l__pdfnotes_tmp_tl { 5 }
+          }
+      }
+      {
+        \tl_set_eq:NN \l__pdfnotes_xcolor_tl \l__pdfnotes_color_tl
+        \exp_args:NV \extractcolorspecs \l__pdfnotes_color_tl
+          \l__pdfnotes_model_tl \l__pdfnotes_spec_tl
+        \exp_args:NVV \convertcolorspec \l__pdfnotes_model_tl \l__pdfnotes_spec_tl
+          { rgb } \l__pdfnotes_tmp_tl
+        \tl_set:Ne \l__pdfnotes_rgb_tl
+          {
+            \exp_args:NV \clist_map_function:nN \l__pdfnotes_tmp_tl \__pdfnotes_rgb_item:n
+          }
+        \tl_trim_spaces:N \l__pdfnotes_rgb_tl
+      }
+  }
+\cs_new_protected:Npn \__pdfnotes_define_html:nn #1#2
+  { \xglobal \definecolor {#1} { HTML } {#2} }
+\cs_new:Npn \__pdfnotes_hex_component:nn #1#2
+  {
+    \fp_eval:n
+      { round ( \int_from_hex:e { \str_range:nnn {#1} {#2} { #2 + 1 } } / 255 , 4 ) }
+  }
+\cs_generate_variant:Nn \__pdfnotes_hex_component:nn { V }
+\cs_generate_variant:Nn \int_from_hex:n { e }
+\cs_new:Npn \__pdfnotes_rgb_item:n #1 { \fp_eval:n { round ( #1 , 4 ) } \c_space_tl }
+
+% ---- the driver ------------------------------------------------------------------------
+% \__pdfnotes_annot:nnnn {width bp} {height bp} {object} {dict}: an annotation whose /Rect
+% spans from the current point `width' to the right and `height' up; the engine adds
+% /Type and /Rect. {object} names the object reserved by \__pdfnotes_reserve:NN (or is
+% empty). The dict must be fully expanded.
+% \__pdfnotes_reserve:NN \obj \ref: reserve the object of an annotation still to come,
+% \obj for \__pdfnotes_annot:nnnn, \ref to refer to it (/IRT).
+\sys_if_engine_luatex:TF
+  {
+    \cs_new_protected:Npn \__pdfnotes_annot:nnnn #1#2#3#4
+      {
+        \pdfextension annot ~ #3 ~ width ~ #1 bp ~ height ~ #2 bp ~ depth ~ 0pt ~ {#4}
+      }
+    \cs_new_protected:Npn \__pdfnotes_reserve:NN #1#2
+      {
+        \pdfextension annot ~ reserveobjnum \scan_stop:
+        \tl_set:Ne #1 { useobjnum ~ \int_eval:n { \pdffeedback lastannot } }
+        \tl_set:Ne #2 { \int_eval:n { \pdffeedback lastannot } ~ 0 ~ R }
+      }
+    \cs_new_protected:Npn \__pdfnotes_info:n #1 { \pdfextension info {#1} }
+  }
+  {
+    \sys_if_engine_xetex:TF
+      {
+        \cs_new_protected:Npn \__pdfnotes_annot:nnnn #1#2#3#4
+          {
+            \tex_special:D
+              { pdf:ann ~ #3 ~ width ~ #1 bp ~ height ~ #2 bp ~ depth ~ 0bp ~ << #4 >> }
+          }
+        \cs_new_protected:Npn \__pdfnotes_reserve:NN #1#2
+          {
+            \int_gincr:N \g__pdfnotes_name_int
+            \tl_set:Ne #1 { @pdfnotes \int_use:N \g__pdfnotes_name_int }
+            \tl_set_eq:NN #2 #1
+          }
+        \cs_new_protected:Npn \__pdfnotes_info:n #1
+          { \tex_special:D { pdf:docinfo ~ << #1 >> } }
+      }
+      {
+        \cs_new_protected:Npn \__pdfnotes_annot:nnnn #1#2#3#4
+          { \pdfannot ~ #3 ~ width ~ #1 bp ~ height ~ #2 bp ~ depth ~ 0pt ~ {#4} }
+        \cs_new_protected:Npn \__pdfnotes_reserve:NN #1#2
+          {
+            \pdfannot ~ reserveobjnum \scan_stop:
+            \tl_set:Ne #1 { useobjnum ~ \int_use:N \pdflastannot }
+            \tl_set:Ne #2 { \int_use:N \pdflastannot \c_space_tl 0 ~ R }
+          }
+        \cs_new_protected:Npn \__pdfnotes_info:n #1 { \pdfinfo {#1} }
+      }
+  }
+
+% PDF output? (Decided at \begin{document}, after any \pdfoutput setting.)
+\AddToHook { begindocument / before }
+  {
+    \bool_lazy_or:nnTF
+      { \sys_if_engine_xetex_p: }
+      {
+        ( \sys_if_engine_pdftex_p: || \sys_if_engine_luatex_p: )
+        && \int_compare_p:nNn { \cs_if_exist_use:NF \tex_pdfoutput:D { 0 } } > { 0 }
+      }
+      { \bool_gset_true:N \g__pdfnotes_pdf_bool }
+      {
+        \bool_if:NF \g__pdfnotes_disable_bool
+          {
+            \PackageWarningNoLine { pdfnotes }
+              { No~PDF~output~(DVI~mode?):~notes~are~typeset,~no~annotations }
+          }
+      }
+  }
+
+% With the first page: an invisible appearance (an empty 1bp form) for Text annotations
+% over a todonotes box, so that viewers draw nothing of their own over it.
+\AddToHook { begindocument } { \pdf_object_new:n { pdfnotes/empty } }
+\AddToHook { shipout / firstpage }
+  {
+    \bool_lazy_and:nnT { \g__pdfnotes_pdf_bool } { ! \__pdfnotes_if_off_p: }
+      {
+        \pdf_object_write:nnn { pdfnotes/empty } { stream }
+          { { /Type /XObject /Subtype /Form /BBox [ 0 ~ 0 ~ 1 ~ 1 ] /Resources << >> } { } }
+      }
+  }
+
+% The document marker in the Info dictionary, when the notes are on: /PDFNotes (active)
+% when every note and mark of this run got its annotation, /PDFNotes (pending) when one
+% did not (positions not known yet: the first run with it, or a page that is gone).
+% pdfTeX and LuaTeX: once, after the last page; XeTeX (xdvipdfmx reads it from a page,
+% a later value replacing an earlier one): on every page.
+\bool_new:N \g__pdfnotes_pending_bool
+\seq_new:N \g__pdfnotes_queued_seq
+\cs_new:Npn \__pdfnotes_state:
+  { \bool_if:NTF \g__pdfnotes_pending_bool { pending } { active } }
+\sys_if_engine_xetex:TF
+  {
+    \AddToHook { shipout / foreground }
+      {
+        \bool_lazy_and:nnT { \g__pdfnotes_pdf_bool } { ! \__pdfnotes_if_off_p: }
+          { \put ( 0 , 0 ) { \__pdfnotes_info:n { /PDFNotes ~ ( \__pdfnotes_state: ) } } }
+      }
+  }
+  {
+    \AddToHook { enddocument / afterlastpage } { \__pdfnotes_info_end: }
+  }
+\cs_new_protected:Npn \__pdfnotes_info_end:
+  {
+    \bool_lazy_and:nnT { \g__pdfnotes_pdf_bool } { ! \__pdfnotes_if_off_p: }
+      {
+        % annotations queued for a page that was never shipped out
+        \seq_map_inline:Nn \g__pdfnotes_queued_seq
+          {
+            \tl_if_empty:cF { g__pdfnotes_page_ ##1 _tl }
+              { \bool_gset_true:N \g__pdfnotes_pending_bool }
+          }
+        \__pdfnotes_info:n { /PDFNotes ~ ( \__pdfnotes_state: ) }
+      }
+  }
+
+% ---- strings ---------------------------------------------------------------------------
+% \__pdfnotes_text:Nn \tl {text}: \tl is a UTF-16BE hex string <FEFF...> with the plain
+% text of `text': LaTeX's \text_purify:n (markup goes, LICR such as \% or \'e becomes the
+% character), escaped special characters as themselves, \\ and \newline a line feed,
+% other commands dropped; runs of spaces become one, spaces next to a line feed and at
+% either end go.
+\text_declare_purify_equivalent:Nn \footnote { \use_none:n }
+\text_declare_purify_equivalent:Nn \textcolor { \use_ii:nn }
+\text_declare_purify_equivalent:Nn \textbackslash { \c_backslash_str }
+\text_declare_purify_equivalent:Nn \textasciitilde { \char_generate:nn { 126 } { 12 } }
+\text_declare_purify_equivalent:Nn \textasciicircum { \char_generate:nn { 94 } { 12 } }
+\text_declare_purify_equivalent:Nn \\ { \char_generate:nn { 10 } { 12 } }
+\text_declare_purify_equivalent:Nn \newline { \char_generate:nn { 10 } { 12 } }
+\tl_const:Ne \c__pdfnotes_inenc_tl { \sys_if_engine_pdftex:T { utf8 } }
+\cs_new_protected:Npn \__pdfnotes_text:Nn #1#2
+  {
+    \tl_set:Ne \l__pdfnotes_tmp_tl { \text_purify:n {#2} }
+    \regex_replace_all:nnN { \cC. } { } \l__pdfnotes_tmp_tl
+    \regex_replace_all:nnN { \x{20}+ } { \cO\  } \l__pdfnotes_tmp_tl
+    \regex_replace_all:nnN { \x{20}* \x{0A} \x{20}* } { \x{0A} } \l__pdfnotes_tmp_tl
+    \regex_replace_all:nnN { \A \x{20} | \x{20} \Z } { } \l__pdfnotes_tmp_tl
+    \__pdfnotes_hex:NV #1 \l__pdfnotes_tmp_tl
+  }
+\cs_generate_variant:Nn \__pdfnotes_text:Nn { NV }
+\cs_new_protected:Npn \__pdfnotes_hex:Nn #1#2
+  {
+    \str_set:Nn \l__pdfnotes_str {#2}
+    \exp_args:NNVV \str_set_convert:NnnnTF \l__pdfnotes_str \l__pdfnotes_str
+      \c__pdfnotes_inenc_tl { utf16/hex }
+      { }
+      {
+        \str_set:Nn \l__pdfnotes_str {#2}
+        \str_set_convert:NVnn \l__pdfnotes_str \l__pdfnotes_str { } { utf16/hex }
+      }
+    \tl_set:Ne #1 { < \l__pdfnotes_str > }
+  }
+\cs_generate_variant:Nn \__pdfnotes_hex:Nn { NV }
+\cs_generate_variant:Nn \str_set_convert:Nnnn { NV }
+
+% /NM (pdfnotes:<id>): a literal string when <id> is printable ASCII, else UTF-16 hex.
+\cs_new_protected:Npn \__pdfnotes_name:NN #1#2
+  {
+    \str_set:Ne \l__pdfnotes_str { pdfnotes: #2 }
+    \regex_match:nVTF { \A [\x{20}-\x{7E}]* \Z } \l__pdfnotes_str
+      {
+        \regex_replace_all:nnN { [\\\(\)] } { \\\0 } \l__pdfnotes_str
+        \tl_set:Ne #1 { ( \l__pdfnotes_str ) }
+      }
+      { \__pdfnotes_hex:NV #1 \l__pdfnotes_str }
+  }
+\cs_generate_variant:Nn \regex_match:nnTF { nV }
+
+\cs_new:Npn \__pdfnotes_two:n #1
+  { \int_compare:nNnT {#1} < { 10 } { 0 } \int_eval:n {#1} }
+\tl_const:Ne \c__pdfnotes_date_tl
+  {
+    ( D: \int_use:N \c_sys_year_int \__pdfnotes_two:n { \c_sys_month_int }
+    \__pdfnotes_two:n { \c_sys_day_int } \__pdfnotes_two:n { \c_sys_hour_int }
+    \__pdfnotes_two:n { \c_sys_minute_int } 00 )
+  }
+
+% ---- ids -------------------------------------------------------------------------------
+% \l__pdfnotes_id_tl: the id= key, else the first 10 hex digits of the MD5 of
+% `<type>|<author>|<kind>|<marked text>|<note>' (type `note' or `mark', the texts as
+% written in the source, \detokenize'd). The second, third ... use of one id gets `-2',
+% `-3' ... appended (in document order); a repeated explicit id also gets a warning.
+\cs_new_protected:Npn \__pdfnotes_id:nnn #1#2#3   % type, marked text, note
+  {
+    \tl_if_empty:NTF \l__pdfnotes_id_tl
+      {
+        \str_set:Ne \l__pdfnotes_str
+          {
+            \str_mdfive_hash:e
+              {
+                #1 | \tl_to_str:V \l__pdfnotes_author_tl
+                | \tl_to_str:V \l__pdfnotes_kind_tl
+                | \tl_to_str:n {#2} | \tl_to_str:n {#3}
+              }
+          }
+        \str_set:Ne \l__pdfnotes_str { \str_range:Nnn \l__pdfnotes_str { 1 } { 10 } }
+        \tl_set:Ne \l__pdfnotes_id_tl { \str_lowercase:f { \l__pdfnotes_str } }
+        \bool_set_false:N \l__pdfnotes_ok_bool
+      }
+      {
+        \tl_set:Ne \l__pdfnotes_id_tl { \tl_to_str:V \l__pdfnotes_id_tl }
+        \bool_set_true:N \l__pdfnotes_ok_bool
+      }
+    \prop_get:NVNTF \g__pdfnotes_ids_prop \l__pdfnotes_id_tl \l__pdfnotes_tmp_tl
+      {
+        \bool_if:NT \l__pdfnotes_ok_bool
+          {
+            \PackageWarning { pdfnotes }
+              { id~`\l__pdfnotes_id_tl'~used~before;~this~one~gets~a~suffix }
+          }
+        \prop_gput:NVe \g__pdfnotes_ids_prop \l__pdfnotes_id_tl
+          { \int_eval:n { \l__pdfnotes_tmp_tl + 1 } }
+        \tl_put_right:Ne \l__pdfnotes_id_tl { - \int_eval:n { \l__pdfnotes_tmp_tl + 1 } }
+      }
+      { \prop_gput:NVn \g__pdfnotes_ids_prop \l__pdfnotes_id_tl { 1 } }
+  }
+\cs_generate_variant:Nn \str_range:nnn { e }
+\cs_generate_variant:Nn \str_mdfive_hash:n { e }
+\cs_generate_variant:Nn \prop_gput:Nnn { NVe }
+
+% The entries every annotation of a note or mark shares. #1: the note text.
+\cs_new_protected:Npn \__pdfnotes_common:n #1
+  {
+    \tl_clear:N \l__pdfnotes_common_tl
+    \tl_if_empty:NF \l__pdfnotes_author_tl
+      {
+        \__pdfnotes_text:NV \l__pdfnotes_tmp_tl \l__pdfnotes_author_tl
+        \tl_put_right:Ne \l__pdfnotes_common_tl { /T ~ \l__pdfnotes_tmp_tl ~ }
+      }
+    \tl_if_empty:NF \l__pdfnotes_kind_tl
+      {
+        \__pdfnotes_text:NV \l__pdfnotes_tmp_tl \l__pdfnotes_kind_tl
+        \tl_put_right:Ne \l__pdfnotes_common_tl { /Subj ~ \l__pdfnotes_tmp_tl ~ }
+      }
+    \__pdfnotes_text:Nn \l__pdfnotes_tmp_tl {#1}
+    \tl_put_right:Ne \l__pdfnotes_common_tl { /Contents ~ \l__pdfnotes_tmp_tl ~ }
+    \__pdfnotes_name:NN \l__pdfnotes_tmp_tl \l__pdfnotes_id_tl
+    \tl_put_right:Ne \l__pdfnotes_common_tl
+      {
+        /NM ~ \l__pdfnotes_tmp_tl ~ /C ~ [ \l__pdfnotes_rgb_tl ] ~ /F ~ 4 ~
+        /M ~ \c__pdfnotes_date_tl \c_space_tl /CreationDate ~ \c__pdfnotes_date_tl \c_space_tl
+      }
+  }
+
+% ---- positions -------------------------------------------------------------------------
+% zref labels with the current point (posx, posy in sp from the page's lower left corner)
+% and the absolute page, written at shipout. In a group, so that zref's own \@bsphack
+% does not overwrite the space saved by a surrounding \@bsphack (a doubled space).
+\cs_new_protected:Npn \__pdfnotes_pos:nn #1#2
+  {
+    \legacy_if:nT { @filesw }
+      {
+        \group_begin:
+        \zref@savepos \zref@labelbyprops {#1} {#2} \zref@savepos
+        \group_end:
+      }
+  }
+\cs_new_protected:Npn \__pdfnotes_pos:n #1 { \__pdfnotes_pos:nn {#1} { posx , posy , abspage } }
+\cs_new:Npn \__pdfnotes_bp:nn #1#2 { ( \zref@extractdefault {#1} {#2} { 0 } / 65781.76 ) }
+\cs_new:Npn \__pdfnotes_page:n #1 { \zref@extractdefault {#1} { abspage } { 0 } }
+\cs_new:Npn \__pdfnotes_num:n #1 { \fp_eval:n { round ( #1 , 2 ) } }
+% \__pdfnotes_need:nT {label} {code}: code when the label is known (from the previous
+% run), else a `Reference undefined' warning, which asks for another run.
+\cs_new_protected:Npn \__pdfnotes_need:nT #1#2
+  {
+    \zref@ifrefundefined {#1}
+      { \zref@refused {#1} \bool_gset_true:N \g__pdfnotes_pending_bool }
+      {#2}
+  }
+
+% ---- the shipout queue -----------------------------------------------------------------
+% Annotations are placed when their page is shipped out, relative to the page's upper
+% left corner (recorded on each page once notes are in use), from positions recorded in
+% the previous run.
+% \__pdfnotes_queue:nnnnnnn {page} {x} {y} {w} {h} {object} {dict}, x/y/w/h fp in bp.
+\cs_new_protected:Npn \__pdfnotes_queue:nnnnnnn #1#2#3#4#5#6#7
+  {
+    \tl_if_exist:cF { g__pdfnotes_page_ \int_eval:n {#1} _tl }
+      {
+        \tl_new:c { g__pdfnotes_page_ \int_eval:n {#1} _tl }
+        \seq_gput_right:Ne \g__pdfnotes_queued_seq { \int_eval:n {#1} }
+      }
+    \tl_gput_right:ce { g__pdfnotes_page_ \int_eval:n {#1} _tl }
+      {
+        \exp_not:N \__pdfnotes_emit:nnnnnn
+          { \__pdfnotes_num:n { #2 - \__pdfnotes_bp:nn { pdfnotes.p \int_eval:n {#1} } { posx } } }
+          { \__pdfnotes_num:n { #3 - \__pdfnotes_bp:nn { pdfnotes.p \int_eval:n {#1} } { posy } } }
+          { \__pdfnotes_num:n {#4} } { \__pdfnotes_num:n {#5} } {#6} {#7}
+      }
+  }
+\cs_new_protected:Npn \__pdfnotes_emit:nnnnnn #1#2#3#4#5#6
+  {
+    \hbox_overlap_right:n
+      {
+        \tex_kern:D #1 bp
+        \tex_raise:D #2 bp \hbox:n { \__pdfnotes_annot:nnnn {#3} {#4} {#5} {#6} }
+      }
+  }
+\AddToHook { shipout / foreground }
+  {
+    \bool_lazy_and:nnT { \g__pdfnotes_used_bool } { \g__pdfnotes_pdf_bool }
+      {
+        \put ( 0 , 0 )
+          {
+            \__pdfnotes_pos:n { pdfnotes.p \int_use:N \g_shipout_readonly_int }
+            \tl_if_exist:cT { g__pdfnotes_page_ \int_use:N \g_shipout_readonly_int _tl }
+              {
+                \tl_use:c { g__pdfnotes_page_ \int_use:N \g_shipout_readonly_int _tl }
+                \tl_gclear:c { g__pdfnotes_page_ \int_use:N \g_shipout_readonly_int _tl }
+              }
+          }
+      }
+  }
+
+% The reference for /IRT of replyto=<id>: the annotation of an earlier note or mark.
+\cs_new_protected:Npn \__pdfnotes_irt:
+  {
+    \tl_if_empty:NF \l__pdfnotes_replyto_tl
+      {
+        \tl_set:Ne \l__pdfnotes_replyto_tl { \tl_to_str:V \l__pdfnotes_replyto_tl }
+        \prop_get:NVNTF \g__pdfnotes_refs_prop \l__pdfnotes_replyto_tl \l__pdfnotes_tmp_tl
+          { \tl_put_right:Ne \l__pdfnotes_common_tl { /IRT ~ \l__pdfnotes_tmp_tl \c_space_tl } }
+          {
+            % an earlier id that is not placed in this run (positions still unknown)
+            % needs no warning: the next run has it
+            \prop_if_in:NVTF \g__pdfnotes_ids_prop \l__pdfnotes_replyto_tl
+              { \bool_gset_true:N \g__pdfnotes_pending_bool }
+              {
+                \PackageWarning { pdfnotes }
+                  {
+                    replyto=\l__pdfnotes_replyto_tl \c_colon_str
+                    \c_space_tl no~earlier~note~or~mark~has~this~id;~
+                    written~as~a~note~of~its~own
+                  }
+              }
+          }
+      }
+  }
+
+% Reserve the object of the annotation to come and remember it under its id (for later
+% replies).
+\cs_new_protected:Npn \__pdfnotes_reserve:
+  {
+    \__pdfnotes_reserve:NN \l__pdfnotes_obj_tl \l__pdfnotes_ref_tl
+    \prop_gput:NVV \g__pdfnotes_refs_prop \l__pdfnotes_id_tl \l__pdfnotes_ref_tl
+  }
+
+% ---- notes -----------------------------------------------------------------------------
+% \pdfnote[keys]{text}: a todonotes note that is also a Text annotation over its box. With
+% box=false, only the annotation, at this point of the text (a sticky-note icon).
+\NewDocumentCommand \pdfnote { O{} +m } { \__pdfnotes_note:nn {#1} {#2} }
+\NewDocumentCommand \newpdfnote { m m }
+  {
+    \__pdfnotes_safe:Nn \l__pdfnotes_tmp_tl {#2}
+    \exp_args:NNV \__pdfnotes_define_note:Nn #1 \l__pdfnotes_tmp_tl
+  }
+\cs_new_protected:Npn \__pdfnotes_define_note:Nn #1#2
+  { \NewDocumentCommand #1 { O{} +m } { \pdfnote [ #2 , ##1 ] {##2} } }
+
+\cs_new_protected:Npn \__pdfnotes_note:nn #1#2
+  {
+    \__pdfnotes_if_off:TF
+      { \@bsphack \@esphack }   % nothing, and one space where it stood
+      {
+        % Right after another note (whose \@esphack left a zero skip, the space before it
+        % still in place) the space after this one goes too: one space in all.
+        \bool_set:Nn \l__pdfnotes_ign_bool
+          {
+            \mode_if_horizontal_p:
+            && \int_compare_p:nNn { \tex_lastnodetype:D } = { 11 }
+            && \dim_compare_p:nNn { \tex_lastskip:D } = { 0pt }
+          }
+        \group_begin:
+        \__pdfnotes_set:n {#1}
+        \int_gincr:N \g__pdfnotes_k_int
+        \bool_gset_true:N \g__pdfnotes_used_bool
+        \__pdfnotes_id:nnn { note } { } {#2}
+        \tl_set:Ne \l__pdfnotes_label_tl { pdfnotes. \int_use:N \g__pdfnotes_k_int }
+        \tl_if_empty:NT \l__pdfnotes_icon_tl
+          {
+            \tl_set:Ne \l__pdfnotes_icon_tl
+              {
+                \bool_lazy_or:nnTF { \l__pdfnotes_box_bool }
+                  { ! \tl_if_empty_p:N \l__pdfnotes_replyto_tl } { none } { Comment }
+              }
+          }
+        \bool_if:NT \g__pdfnotes_pdf_bool { \__pdfnotes_note_place:n {#2} }
+        \bool_if:NTF \l__pdfnotes_box_bool
+          {
+            \use:e
+              {
+                \group_end:
+                \exp_not:N \todo
+                  [
+                    backgroundcolor = { \exp_not:V \l__pdfnotes_xcolor_tl } ,
+                    caption = { \exp_not:V \l__pdfnotes_prefix_tl \exp_not:n {#2} }
+                    \exp_not:V \l__pdfnotes_unknown_tl
+                    \exp_not:V \l__pdfnotes_todo_tl
+                  ]
+                  {
+                    \exp_not:N \mode_leave_vertical:
+                    \exp_not:N \__pdfnotes_pos:nn { \l__pdfnotes_label_tl .s }
+                      { posx , posy , abspage , pdfnoteswd , pdfnotesht , pdfnotesdp }
+                    \exp_not:V \l__pdfnotes_prefix_tl \exp_not:n {#2}
+                    \exp_not:N \__pdfnotes_pos:n { \l__pdfnotes_label_tl .e }
+                  }
+                \bool_if:NT \l__pdfnotes_ign_bool { \exp_not:N \ignorespaces }
+              }
+          }
+          {
+            \use:e
+              {
+                \group_end:
+                \exp_not:N \@bsphack
+                \exp_not:N \__pdfnotes_pos:n { \l__pdfnotes_label_tl .s }
+                \exp_not:N \@esphack
+                \bool_if:NT \l__pdfnotes_ign_bool { \exp_not:N \ignorespaces }
+              }
+          }
+      }
+  }
+
+% Queue the Text annotation of the current note (positions from the previous run): over
+% the todonotes box, from the text's first line to its last and as wide as the box's
+% text; with box=false a 10bp square at the point.
+\cs_new_protected:Npn \__pdfnotes_note_place:n #1
+  {
+    \__pdfnotes_common:n {#1}
+    \__pdfnotes_irt:
+    \tl_set:Ne \l__pdfnotes_tmp_tl { \l__pdfnotes_label_tl .s }
+    \__pdfnotes_need:nT { \l__pdfnotes_tmp_tl }
+      {
+        \int_set:Nn \l__pdfnotes_page_int { \__pdfnotes_page:n { \l__pdfnotes_tmp_tl } }
+        \__pdfnotes_need:nT { pdfnotes.p \int_use:N \l__pdfnotes_page_int }
+          {
+            \fp_set:Nn \l__pdfnotes_x_fp { \__pdfnotes_bp:nn { \l__pdfnotes_tmp_tl } { posx } }
+            \fp_set:Nn \l__pdfnotes_y_fp { \__pdfnotes_bp:nn { \l__pdfnotes_tmp_tl } { posy } }
+            \bool_if:NTF \l__pdfnotes_box_bool
+              {
+                \fp_set:Nn \l__pdfnotes_w_fp
+                  { \__pdfnotes_bp:nn { \l__pdfnotes_tmp_tl } { pdfnoteswd } }
+                \fp_set:Nn \l__pdfnotes_h_fp
+                  { \__pdfnotes_bp:nn { \l__pdfnotes_tmp_tl } { pdfnotesht } }
+                \fp_set:Nn \l__pdfnotes_asc_fp
+                  { \__pdfnotes_bp:nn { \l__pdfnotes_tmp_tl } { pdfnotesdp } }
+                \fp_add:Nn \l__pdfnotes_y_fp { \l__pdfnotes_h_fp }   % top of the first line
+                \fp_set:Nn \l__pdfnotes_h_fp { \l__pdfnotes_h_fp + \l__pdfnotes_asc_fp }
+                \zref@ifrefundefined { \l__pdfnotes_label_tl .e } { }
+                  {
+                    \int_compare:nNnT
+                      { \__pdfnotes_page:n { \l__pdfnotes_label_tl .e } } = \l__pdfnotes_page_int
+                      {
+                        \fp_set:Nn \l__pdfnotes_h_fp
+                          {
+                            max ( \l__pdfnotes_h_fp , \l__pdfnotes_y_fp
+                              - \__pdfnotes_bp:nn { \l__pdfnotes_label_tl .e } { posy }
+                              + \l__pdfnotes_asc_fp )
+                          }
+                      }
+                  }
+                \fp_sub:Nn \l__pdfnotes_y_fp { \l__pdfnotes_h_fp }
+              }
+              {
+                \fp_set:Nn \l__pdfnotes_w_fp { 10 }
+                \fp_set:Nn \l__pdfnotes_h_fp { 10 }
+              }
+            \tl_set:Ne \l__pdfnotes_dict_tl
+              {
+                /Subtype /Text ~ \l__pdfnotes_common_tl /Open ~ false ~
+                \str_if_eq:VnTF \l__pdfnotes_icon_tl { none }
+                  { /Name /Comment ~ /AP ~ << /N ~ \pdf_object_ref:n { pdfnotes/empty } >> }
+                  { /Name / \l__pdfnotes_icon_tl }
+              }
+            \__pdfnotes_reserve:
+            \__pdfnotes_queue:nnnnnnn { \l__pdfnotes_page_int }
+              { \l__pdfnotes_x_fp } { \l__pdfnotes_y_fp }
+              { \l__pdfnotes_w_fp } { \l__pdfnotes_h_fp }
+              { \l__pdfnotes_obj_tl } { \l__pdfnotes_dict_tl }
+          }
+      }
+  }
+
+% ---- marks -----------------------------------------------------------------------------
+% \pdfnotemark[keys]{marked text}{note} (also \pdfmark, unless that is taken): the marked
+% text with a markup annotation over it (one quad per line) carrying the note, plus
+% (note=true) the note as a todonotes note without an annotation of its own.
+\NewDocumentCommand \pdfnotemark { O{} +m +m } { \__pdfnotes_mark:nnn {#1} {#2} {#3} }
+\AddToHook { begindocument / before }
+  {
+    \cs_if_exist:NTF \pdfmark
+      {
+        \PackageInfo { pdfnotes }
+          { \token_to_str:N \pdfmark \ is~taken~(hyperref's~dvips~driver?):~use~
+            \token_to_str:N \pdfnotemark }
+      }
+      { \cs_gset_eq:NN \pdfmark \pdfnotemark }
+  }
+\NewDocumentCommand \newpdfmark { m m }
+  {
+    \__pdfnotes_safe:Nn \l__pdfnotes_tmp_tl {#2}
+    \exp_args:NNV \__pdfnotes_define_mark:Nn #1 \l__pdfnotes_tmp_tl
+  }
+\cs_new_protected:Npn \__pdfnotes_define_mark:Nn #1#2
+  {
+    \NewDocumentCommand #1 { O{} +m +m }
+      { \pdfnotemark [ #2 , ##1 ] {##2} {##3} }
+  }
+
+\cs_new_protected:Npn \__pdfnotes_mark:nnn #1#2#3
+  {
+    \__pdfnotes_if_off:TF
+      {#2}
+      {
+        \group_begin:
+        \__pdfnotes_set:n {#1}
+        \int_gincr:N \g__pdfnotes_k_int
+        \bool_gset_true:N \g__pdfnotes_used_bool
+        \__pdfnotes_id:nnn { mark } {#2} {#3}
+        \tl_set:Ne \l__pdfnotes_label_tl { pdfnotes. \int_use:N \g__pdfnotes_k_int }
+        \bool_if:NT \g__pdfnotes_pdf_bool
+          {
+            \__pdfnotes_common:n {#3}
+            \__pdfnotes_irt:
+            \__pdfnotes_mark_place:
+          }
+        \tl_if_empty:NT \l__pdfnotes_notecolor_tl
+          { \tl_set_eq:NN \l__pdfnotes_notecolor_tl \l__pdfnotes_xcolor_tl }
+        \__pdfnotes_spaces:Nn \l__pdfnotes_text_tl {#2}
+        \use:e
+          {
+            \group_end:
+            \exp_not:N \mode_leave_vertical:
+            \int_gzero:N \exp_not:N \g__pdfnotes_b_int
+            \exp_not:N \__pdfnotes_pos:n { \l__pdfnotes_label_tl .s }
+            \exp_not:N \tex_vadjust:D
+              { \exp_not:N \__pdfnotes_pos:n { \l__pdfnotes_label_tl .sl } }
+            \tl_if_empty:NTF \l__pdfnotes_textcolor_tl
+              { \exp_not:V \l__pdfnotes_text_tl }
+              {
+                \exp_not:N \textcolor { \exp_not:V \l__pdfnotes_textcolor_tl }
+                  { \exp_not:V \l__pdfnotes_text_tl }
+              }
+            \exp_not:N \__pdfnotes_pos:n { \l__pdfnotes_label_tl .e }
+            \exp_not:N \tex_vadjust:D
+              { \exp_not:N \__pdfnotes_pos:n { \l__pdfnotes_label_tl .el } }
+            \bool_if:NT \l__pdfnotes_note_bool
+              {
+                \exp_not:N \todo
+                  [
+                    backgroundcolor = { \exp_not:V \l__pdfnotes_notecolor_tl } ,
+                    caption = { \exp_not:V \l__pdfnotes_prefix_tl \exp_not:n {#3} }
+                    \exp_not:V \l__pdfnotes_unknown_tl
+                    \exp_not:V \l__pdfnotes_todo_tl
+                  ]
+                  { \exp_not:V \l__pdfnotes_prefix_tl \exp_not:n {#3} }
+              }
+          }
+      }
+  }
+
+% The marked text with every space between words at the top level (not in braces,
+% brackets or math) replaced by \__pdfnotes_space:n, which records where each word ends:
+% the line structure of the mark for the next run.
+\cs_new_protected:Npn \__pdfnotes_spaces:Nn #1#2
+  {
+    \tl_clear:N #1
+    \int_zero:N \l__pdfnotes_math_int
+    \int_zero:N \l__pdfnotes_bracket_int
+    \__pdfnotes_scan:Nw #1 #2 \s__pdfnotes_stop
+  }
+\cs_new_protected:Npn \__pdfnotes_scan:Nw #1
+  {
+    \peek_catcode_remove:NTF \c_space_token
+      {
+        \bool_lazy_and:nnTF
+          { \int_compare_p:nNn \l__pdfnotes_math_int = 0 }
+          { \int_compare_p:nNn \l__pdfnotes_bracket_int = 0 }
+          {
+            \tl_put_right:Ne #1
+              { \exp_not:N \__pdfnotes_space:n { \l__pdfnotes_label_tl } }
+          }
+          { \tl_put_right:Nn #1 { ~ } }
+        \__pdfnotes_scan:Nw #1
+      }
+      {
+        \peek_catcode:NTF \c_group_begin_token
+          { \__pdfnotes_scan_group:Nn #1 }
+          { \__pdfnotes_scan_token:NN #1 }
+      }
+  }
+\cs_new_protected:Npn \__pdfnotes_scan_group:Nn #1#2
+  {
+    \tl_put_right:Nn #1 { {#2} }
+    \__pdfnotes_scan:Nw #1
+  }
+\cs_new_protected:Npn \__pdfnotes_scan_token:NN #1#2
+  {
+    \token_if_eq_meaning:NNF #2 \s__pdfnotes_stop
+      {
+        \token_if_math_toggle:NTF #2
+          { \int_set:Nn \l__pdfnotes_math_int { 1 - \l__pdfnotes_math_int } }
+          {
+            \token_if_eq_meaning:NNT #2 \( { \int_set:Nn \l__pdfnotes_math_int { 1 } }
+            \token_if_eq_meaning:NNT #2 \) { \int_set:Nn \l__pdfnotes_math_int { 0 } }
+            \token_if_eq_charcode:NNT #2 [ { \int_incr:N \l__pdfnotes_bracket_int }
+            \token_if_eq_charcode:NNT #2 ]
+              {
+                \int_compare:nNnT \l__pdfnotes_bracket_int > 0
+                  { \int_decr:N \l__pdfnotes_bracket_int }
+              }
+          }
+        \tl_put_right:Nn #1 {#2}
+        \__pdfnotes_scan:Nw #1
+      }
+  }
+% A space in the marked text: the end of the word before it, then the space. Only after
+% material that can end a word; after glue, a penalty or nothing it is a plain space, so
+% that \ignorespaces (after \label, \index ...) and line starts behave as before.
+\cs_new_protected:Npn \__pdfnotes_space:n #1
+  {
+    \bool_lazy_and:nnTF
+      { \mode_if_horizontal_p: }
+      {
+        ! \int_compare_p:nNn { \tex_lastnodetype:D } = { -1 }
+        && ! \int_compare_p:nNn { \tex_lastnodetype:D } = { 11 }
+        && ! \int_compare_p:nNn { \tex_lastnodetype:D } = { 13 }
+      }
+      {
+        \int_gincr:N \g__pdfnotes_b_int
+        \__pdfnotes_pos:n { #1 .b \int_use:N \g__pdfnotes_b_int }
+        \c_space_token
+      }
+      { ~ }
+  }
+
+% The quads of the current mark from the previous run: the positions of its start, of
+% each word end before a space, and of its end, grouped into lines (runs of points on
+% one baseline of one page). The first line starts at the start, the last ends at the
+% end, the others span the column (its left edge from \vadjust, plus the list indent,
+% and \linewidth); lines without a point (inside a group) are filled in at even spacing.
+% One annotation per page.
+\cs_new_protected:Npn \__pdfnotes_mark_place:
+  {
+    \__pdfnotes_need:nT { \l__pdfnotes_label_tl .s }
+      {
+        \__pdfnotes_need:nT { \l__pdfnotes_label_tl .e }
+          {
+            \__pdfnotes_mark_points:
+            \__pdfnotes_mark_metrics:
+            \seq_clear:N \l__pdfnotes_pages_seq
+            \int_zero:N \l__pdfnotes_runs_int
+            \bool_set_false:N \l__pdfnotes_ecol_bool
+            \seq_map_function:NN \l__pdfnotes_pts_seq \__pdfnotes_mark_point:n
+            \__pdfnotes_run_flush:n { true }
+            \__pdfnotes_mark_queue:
+          }
+      }
+  }
+\cs_new_protected:Npn \__pdfnotes_mark_points:
+  {
+    \seq_clear:N \l__pdfnotes_pts_seq
+    \__pdfnotes_point:e { \l__pdfnotes_label_tl .s }
+    \__pdfnotes_points_loop:n { 1 }
+    \__pdfnotes_point:e { \l__pdfnotes_label_tl .e }
+  }
+\cs_new_protected:Npn \__pdfnotes_points_loop:n #1
+  {
+    \zref@ifrefundefined { \l__pdfnotes_label_tl .b #1 } { }
+      {
+        \__pdfnotes_point:e { \l__pdfnotes_label_tl .b #1 }
+        \exp_args:Ne \__pdfnotes_points_loop:n { \int_eval:n { #1 + 1 } }
+      }
+  }
+\cs_new_protected:Npn \__pdfnotes_point:n #1
+  {
+    \seq_put_right:Ne \l__pdfnotes_pts_seq
+      {
+        { \fp_eval:n { \__pdfnotes_bp:nn {#1} { posx } } }
+        { \fp_eval:n { \__pdfnotes_bp:nn {#1} { posy } } }
+        { \__pdfnotes_page:n {#1} }
+      }
+  }
+\cs_generate_variant:Nn \__pdfnotes_point:n { e }
+\cs_new_protected:Npn \__pdfnotes_mark_metrics:
+  {
+    \fp_set:Nn \l__pdfnotes_bs_fp { \dim_to_decimal_in_bp:n { \baselineskip } }
+    \fp_compare:nNnT \l__pdfnotes_bs_fp < { 1 }
+      { \fp_set:Nn \l__pdfnotes_bs_fp { \dim_to_decimal_in_bp:n { 1.2 \f@size pt } } }
+    \fp_set:Nn \l__pdfnotes_asc_fp
+      { \dim_to_decimal_in_bp:n { \tex_fontcharht:D \tex_font:D `( } }
+    \fp_set:Nn \l__pdfnotes_dsc_fp
+      { \dim_to_decimal_in_bp:n { \tex_fontchardp:D \tex_font:D `( } }
+    \fp_compare:nNnT { \l__pdfnotes_asc_fp + \l__pdfnotes_dsc_fp } < { 1 }
+      {
+        \fp_set:Nn \l__pdfnotes_asc_fp { 0.75 * \l__pdfnotes_bs_fp }
+        \fp_set:Nn \l__pdfnotes_dsc_fp { 0.25 * \l__pdfnotes_bs_fp }
+      }
+    \fp_set:Nn \l__pdfnotes_lm_fp { \dim_to_decimal_in_bp:n { \@totalleftmargin } }
+    \fp_set:Nn \l__pdfnotes_lw_fp { \dim_to_decimal_in_bp:n { \linewidth } }
+    \fp_set:Nn \l__pdfnotes_xe_fp { \__pdfnotes_bp:nn { \l__pdfnotes_label_tl .e } { posx } }
+    \zref@ifrefundefined { \l__pdfnotes_label_tl .sl }
+      {
+        % no \vadjust (inside a box): the mark is on one line
+        \fp_set:Nn \l__pdfnotes_Ls_fp
+          {
+            min ( \__pdfnotes_bp:nn { \l__pdfnotes_label_tl .s } { posx } ,
+              \l__pdfnotes_xe_fp ) - \l__pdfnotes_lm_fp
+          }
+      }
+      {
+        \fp_set:Nn \l__pdfnotes_Ls_fp
+          { \__pdfnotes_bp:nn { \l__pdfnotes_label_tl .sl } { posx } }
+      }
+    \zref@ifrefundefined { \l__pdfnotes_label_tl .el }
+      { \fp_set_eq:NN \l__pdfnotes_Le_fp \l__pdfnotes_Ls_fp }
+      {
+        \fp_set:Nn \l__pdfnotes_Le_fp
+          { \__pdfnotes_bp:nn { \l__pdfnotes_label_tl .el } { posx } }
+      }
+  }
+% One point {x}{y}{page}: on the current line, or the start of the next.
+\cs_new_protected:Npn \__pdfnotes_mark_point:n #1 { \__pdfnotes_mark_point:nnn #1 }
+\cs_new_protected:Npn \__pdfnotes_mark_point:nnn #1#2#3
+  {
+    \int_compare:nNnTF \l__pdfnotes_runs_int = 0
+      { \__pdfnotes_run_start:nnn {#1} {#2} {#3} }
+      {
+        \bool_lazy_and:nnTF
+          { \int_compare_p:nNn {#3} = \l__pdfnotes_rpage_int }
+          {
+            \fp_compare_p:nNn
+              { abs ( #2 - \l__pdfnotes_ry_fp ) } < { 0.3 * \l__pdfnotes_bs_fp }
+          }
+          {
+            \fp_set:Nn \l__pdfnotes_rx_fp { min ( \l__pdfnotes_rx_fp , #1 ) }
+            \fp_set:Nn \l__pdfnotes_rX_fp { max ( \l__pdfnotes_rX_fp , #1 ) }
+          }
+          {
+            \__pdfnotes_run_flush:n { false }
+            % a new page, or up the page (the next column): the end's column from here
+            \bool_lazy_or:nnT
+              { ! \int_compare_p:nNn {#3} = \l__pdfnotes_rpage_int }
+              { \fp_compare_p:nNn {#2} > \l__pdfnotes_ry_fp }
+              { \bool_set_true:N \l__pdfnotes_ecol_bool }
+            % lines with no point of their own between this one and the last
+            \bool_lazy_all:nT
+              {
+                { \int_compare_p:nNn {#3} = \l__pdfnotes_rpage_int }
+                { \fp_compare_p:nNn { \l__pdfnotes_ry_fp - #2 } > { 1.5 * \l__pdfnotes_bs_fp } }
+              }
+              {
+                \int_set:Nn \l__pdfnotes_m_int
+                  { \fp_eval:n { round ( ( \l__pdfnotes_ry_fp - #2 ) / \l__pdfnotes_bs_fp ) } }
+                \int_step_inline:nn { \l__pdfnotes_m_int - 1 }
+                  {
+                    \__pdfnotes_line:nnnn {#3}
+                      { \l__pdfnotes_ry_fp - ##1 * ( \l__pdfnotes_ry_fp - #2 ) / \l__pdfnotes_m_int }
+                      { \__pdfnotes_col_left: }
+                      { \__pdfnotes_col_left: + \l__pdfnotes_lw_fp }
+                  }
+              }
+            \__pdfnotes_run_start:nnn {#1} {#2} {#3}
+          }
+      }
+  }
+\cs_new_protected:Npn \__pdfnotes_run_start:nnn #1#2#3
+  {
+    \int_incr:N \l__pdfnotes_runs_int
+    \int_set:Nn \l__pdfnotes_rpage_int {#3}
+    \fp_set:Nn \l__pdfnotes_ry_fp {#2}
+    \fp_set:Nn \l__pdfnotes_rx_fp {#1}
+    \fp_set:Nn \l__pdfnotes_rX_fp {#1}
+  }
+\cs_new:Npn \__pdfnotes_col_left:
+  {
+    ( \bool_if:NTF \l__pdfnotes_ecol_bool { \l__pdfnotes_Le_fp } { \l__pdfnotes_Ls_fp }
+      + \l__pdfnotes_lm_fp )
+  }
+% Close the current line; #1: is it the last?
+\cs_new_protected:Npn \__pdfnotes_run_flush:n #1
+  {
+    \__pdfnotes_line:nnnn { \l__pdfnotes_rpage_int } { \l__pdfnotes_ry_fp }
+      {
+        \int_compare:nNnTF \l__pdfnotes_runs_int = 1
+          { \l__pdfnotes_rx_fp }
+          { min ( \l__pdfnotes_rx_fp , \__pdfnotes_col_left: ) }
+      }
+      {
+        \str_if_eq:nnTF {#1} { true }
+          { \l__pdfnotes_xe_fp }
+          { max ( \l__pdfnotes_rX_fp , \__pdfnotes_col_left: + \l__pdfnotes_lw_fp ) }
+      }
+  }
+% \__pdfnotes_line:nnnn {page} {baseline} {x1} {x2}: one quad (upper left, upper right,
+% lower left, lower right, as Acrobat writes them) on that page, fp expressions in bp.
+\cs_new_protected:Npn \__pdfnotes_line:nnnn #1#2#3#4
+  {
+    \tl_set:Ne \l__pdfnotes_tmp_tl { \int_eval:n {#1} }
+    \seq_if_in:NVF \l__pdfnotes_pages_seq \l__pdfnotes_tmp_tl
+      {
+        \seq_put_right:NV \l__pdfnotes_pages_seq \l__pdfnotes_tmp_tl
+        \tl_clear_new:c { l__pdfnotes_q_ \l__pdfnotes_tmp_tl _tl }
+        \clist_map_inline:nn { x , y , X , Y }
+          { \fp_zero_new:c { l__pdfnotes_ ##1 _ \l__pdfnotes_tmp_tl _fp } }
+        \fp_set:cn { l__pdfnotes_x_ \l__pdfnotes_tmp_tl _fp } { inf }
+        \fp_set:cn { l__pdfnotes_y_ \l__pdfnotes_tmp_tl _fp } { inf }
+        \fp_set:cn { l__pdfnotes_X_ \l__pdfnotes_tmp_tl _fp } { -inf }
+        \fp_set:cn { l__pdfnotes_Y_ \l__pdfnotes_tmp_tl _fp } { -inf }
+      }
+    \fp_set:Nn \l__pdfnotes_y_fp {#2}
+    \fp_set:Nn \l__pdfnotes_x_fp { min ( #3 , #4 ) }
+    \fp_set:Nn \l__pdfnotes_w_fp { max ( #3 , #4 ) }
+    \tl_put_right:ce { l__pdfnotes_q_ \l__pdfnotes_tmp_tl _tl }
+      {
+        \__pdfnotes_num:n { \l__pdfnotes_x_fp } ~
+        \__pdfnotes_num:n { \l__pdfnotes_y_fp + \l__pdfnotes_asc_fp } ~
+        \__pdfnotes_num:n { \l__pdfnotes_w_fp } ~
+        \__pdfnotes_num:n { \l__pdfnotes_y_fp + \l__pdfnotes_asc_fp } ~
+        \__pdfnotes_num:n { \l__pdfnotes_x_fp } ~
+        \__pdfnotes_num:n { \l__pdfnotes_y_fp - \l__pdfnotes_dsc_fp } ~
+        \__pdfnotes_num:n { \l__pdfnotes_w_fp } ~
+        \__pdfnotes_num:n { \l__pdfnotes_y_fp - \l__pdfnotes_dsc_fp } ~
+      }
+    \__pdfnotes_bbox:nnn { x } { min } { \l__pdfnotes_x_fp }
+    \__pdfnotes_bbox:nnn { X } { max } { \l__pdfnotes_w_fp }
+    \__pdfnotes_bbox:nnn { y } { min } { \l__pdfnotes_y_fp - \l__pdfnotes_dsc_fp }
+    \__pdfnotes_bbox:nnn { Y } { max } { \l__pdfnotes_y_fp + \l__pdfnotes_asc_fp }
+  }
+\cs_new_protected:Npn \__pdfnotes_bbox:nnn #1#2#3
+  {
+    \fp_set:cn { l__pdfnotes_ #1 _ \l__pdfnotes_tmp_tl _fp }
+      { #2 ( \use:c { l__pdfnotes_ #1 _ \l__pdfnotes_tmp_tl _fp } , #3 ) }
+  }
+\cs_generate_variant:Nn \seq_if_in:NnF { NV }
+% One annotation per page; the first is the one replies refer to.
+\cs_new_protected:Npn \__pdfnotes_mark_queue:
+  {
+    \bool_set_true:N \l__pdfnotes_ok_bool
+    \seq_map_inline:Nn \l__pdfnotes_pages_seq
+      {
+        \__pdfnotes_need:nT { pdfnotes.p ##1 }
+          {
+            \bool_if:NTF \l__pdfnotes_ok_bool
+              { \__pdfnotes_reserve: \bool_set_false:N \l__pdfnotes_ok_bool }
+              { \tl_clear:N \l__pdfnotes_obj_tl }
+            \__pdfnotes_queue:nnnnnnn {##1}
+              { \use:c { l__pdfnotes_x_ ##1 _fp } }
+              { \use:c { l__pdfnotes_y_ ##1 _fp } }
+              { \use:c { l__pdfnotes_X_ ##1 _fp } - \use:c { l__pdfnotes_x_ ##1 _fp } }
+              { \use:c { l__pdfnotes_Y_ ##1 _fp } - \use:c { l__pdfnotes_y_ ##1 _fp } }
+              { \l__pdfnotes_obj_tl }
+              {
+                /Subtype / \l__pdfnotes_style_tl \c_space_tl
+                /QuadPoints ~ [ \tl_use:c { l__pdfnotes_q_ ##1 _tl } ] ~
+                \l__pdfnotes_common_tl
+              }
+          }
+      }
+  }

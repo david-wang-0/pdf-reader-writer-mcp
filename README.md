@@ -70,6 +70,18 @@ annotations. Every reader and writer, the MCP tools included, takes an `flock`
 on the PDF, so concurrent writes from both sides are never lost. The protocol is
 in [EDITING.md](EDITING.md).
 
+## Notes from LaTeX as annotations
+
+`latex/pdfnotes.sty` is a small LaTeX package for review notes in a paper's
+sources. `\pdfnote[author=...,kind=todo]{...}` is a todonotes note that is also a
+Text annotation over its box. `\pdfmark[...]{marked text}{note}` puts a highlight,
+underline, squiggle or strike-out annotation over typeset text, across line and
+page breaks. So LaTeX notes show up in every viewer's annotation list, and in
+`annotations`, with author, colour, subject and note, while the page keeps the
+todonotes look. A `disable` build has no notes and no annotations. Install,
+usage, and the exact interface (keys, `/NM pdfnotes:<id>`, the Info key
+`/PDFNotes`, normalisation rules) are in [latex/README.md](latex/README.md).
+
 ## Install
 
 With [uv](https://docs.astral.sh/uv/):
@@ -128,6 +140,9 @@ Any other client: run `pdf-reader-writer-mcp` as a stdio server named `pdf-reade
 uv venv && uv pip install -e '.[test]'
 .venv/bin/pytest
 ```
+
+`tests/test_latex.py` compiles small documents with `latex/pdfnotes.sty` (pdflatex;
+lualatex and xelatex when installed) and is skipped without pdflatex.
 
 `pdf_reader_writer_mcp/pdf.py` holds all PDF logic and the file lock; `server.py` is the thin MCP layer over it and `edit.py` the edit service (`.venv/bin/pdf-reader-writer-edit`).
 
