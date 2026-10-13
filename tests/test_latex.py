@@ -72,7 +72,7 @@ def by_id(path: str) -> dict[str, dict]:
         for e in pdf.annotations(path):
             nm = raw(doc, e["xref"], "NM") or ""
             e["nm"] = nm
-            e["subject"] = doc.xref_get_key(e["xref"], "Subj")[1]
+            e["subject"] = raw(doc, e["xref"], "Subj") or ""
             e["C"] = raw(doc, e["xref"], "C")
             out.setdefault(nm.removeprefix("pdfnotes:"), e)
     return out
@@ -132,6 +132,15 @@ And \todobob{Bob says hi.} \donealice{Done (really).}
     # todonotes' boxes are still there, prefix included (the prefix is not in /Contents)
     for s in ("Check the region bound.", "Alice: A comment by Alice.", "Bob: Bob says hi."):
         assert s in text.replace("\n", " ")
+
+
+def test_shorthand_key_forms(tmp_path):
+    """\\newpdfnote{\\cmd}{keys}, \\newpdfnote{\\cmd}[keys] and \\newpdfnote{\\cmd} alike."""
+    path, _ = build(tmp_path, r"\braced{One.} \bracketed{Two.} \bare{Three.} \hl{marked}{Four.}", "\n".join([
+        r"\newpdfnote{\braced}{kind=a,author=A}", r"\newpdfnote{\bracketed}[kind=b]", r"\newpdfnote{\bare}",
+        r"\newpdfmark{\hl}[kind=d]{author=D,note=false}"]))
+    got = {e["note"]: (e["author"], e["subject"]) for e in by_id(path).values()}
+    assert got == {"One.": ("A", "a"), "Two.": ("", "b"), "Three.": ("", ""), "Four.": ("D", "d")}
 
 
 def test_contents_round_trip(tmp_path):

@@ -77,8 +77,8 @@ Everything below is the contract that `sync_to_source` and other readers rely on
 |---|---|
 | `\pdfnote[keys]{text}` | A note: a todonotes box and a Text annotation over it |
 | `\pdfmark[keys]{marked text}{note}` | A mark over `marked text` carrying `note`; also `\pdfnotemark`, which is always defined (`\pdfmark` is only defined when nothing else defines it: hyperref's dvips driver does) |
-| `\newpdfnote{\cmd}{keys}` | Defines `\cmd[keys]{text}` = `\pdfnote[<keys>,keys]{text}` |
-| `\newpdfmark{\cmd}{keys}` | Defines `\cmd[keys]{marked text}{note}` = `\pdfmark[<keys>,keys]{...}{...}` |
+| `\newpdfnote{\cmd}{keys}` | Defines `\cmd[keys]{text}` = `\pdfnote[<keys>,keys]{text}`; the keys may also be given as `[keys]`, or left out: `\newpdfnote{\cmd}` |
+| `\newpdfmark{\cmd}{keys}` | Defines `\cmd[keys]{marked text}{note}` = `\pdfmark[<keys>,keys]{...}{...}`; keys as for `\newpdfnote` |
 | `\pdfnotesetup{keys}` | Defaults for all later notes and marks |
 
 Load the package after todonotes when you load todonotes yourself with options. A key's
@@ -173,8 +173,8 @@ note of its own`.
 | `pending` | The notes are on, but at least one note or mark has no annotation in this run: the first run with it (positions not recorded yet), or its page has gone |
 | absent | The notes are off (`disable`, `final`, todonotes `disable`), or DVI output |
 
-So a reader may take "an id in the sources without an annotation" as deleted only from an
-`active` build.
+So a reader can tell whether a build is complete: in a `pending` build, a note or mark of
+the sources may be missing from the PDF only because its positions are not known yet.
 
 ## How it works
 
