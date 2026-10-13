@@ -82,9 +82,10 @@ def _open(path: str, write: bool = False) -> Iterator[pymupdf.Document]:
     """The document, opened fresh under an flock on the file itself.
 
     Readers share the lock; a writer holds it exclusively and the document is
-    saved incrementally when the block exits without an exception. Nothing is
-    kept open across calls, so a write never works on stale bytes and writers in
-    other processes (the edit service, another MCP server) are never lost.
+    saved incrementally when the block exits without an exception and changed
+    something. Nothing is kept open across calls, so a write never works on
+    stale bytes and writers in other processes (the edit service, another MCP
+    server) are never lost.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(f"no such file: {path}")
@@ -93,7 +94,7 @@ def _open(path: str, write: bool = False) -> Iterator[pymupdf.Document]:
         doc = pymupdf.open(path)
         try:
             yield doc
-            if write:
+            if write and doc.is_dirty:
                 if not doc.can_save_incrementally():
                     raise RuntimeError("document cannot be saved incrementally (encrypted or repaired?)")
                 doc.saveIncr()

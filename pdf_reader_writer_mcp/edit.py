@@ -15,9 +15,9 @@ from typing import Any
 
 import pymupdf
 
-from . import pdf
+from . import pdf, source
 
-VERSION = 1
+VERSION = 2
 
 
 class RequestError(ValueError):
@@ -229,12 +229,17 @@ def list_(path: str) -> list[dict[str, Any]]:
     return pdf.annotations(path, geometry=True)
 
 
+def sync(path: str) -> dict[str, Any]:
+    """Write the PDF's marks into its LaTeX sources, as the MCP ``sync_to_source`` does."""
+    return source.sync(path)
+
+
 def ping() -> dict[str, Any]:
     return {"version": VERSION}
 
 
 OPS = {"mark": mark, "note": note, "reply": reply, "update": update, "delete": delete,
-       "snapshot": snapshot, "restore": restore, "list": list_, "ping": ping}
+       "snapshot": snapshot, "restore": restore, "list": list_, "sync": sync, "ping": ping}
 
 _TYPES: dict[str, tuple[type, str]] = {
     "path": (str, "a string"), "page": (int, "an integer"), "xref": (int, "an integer"),

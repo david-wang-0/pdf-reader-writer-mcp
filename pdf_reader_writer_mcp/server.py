@@ -1,4 +1,4 @@
-"""The MCP server: eleven tools over the pdf backend."""
+"""The MCP server: twelve tools over the pdf backend and the LaTeX source sync."""
 
 from __future__ import annotations
 
@@ -14,11 +14,12 @@ except ImportError:  # mcp 1.x
 
 from mcp.types import ToolAnnotations
 
-from . import pdf
+from . import pdf, source
 
 READ = ToolAnnotations(readOnlyHint=True)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
 DELETE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+SYNC = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True)
 
 mcp = FastMCP(
     "pdf-reader-writer",
@@ -30,7 +31,8 @@ mcp = FastMCP(
         "turns the user's selection (a viewer's get_selection) into line numbers; annotations "
         "collects their highlights and notes; links and outline let you follow citations and "
         "sections yourself; mark_text, add_note and attach_file write marks, notes and files "
-        "(e.g. Markdown, Mermaid) back. The viewers watch the file and show writes by themselves. "
+        "(e.g. Markdown, Mermaid) back; sync_to_source carries the marks of a PDF built from "
+        "LaTeX into its sources. The viewers watch the file and show writes by themselves. "
         "Okular keeps unsaved annotations in memory and loses them when the file changes: when "
         "the user reads in Okular, ask them to save (Ctrl+S) before writing."
     ),
@@ -146,6 +148,14 @@ def remove_annotation(path: str, xref: int) -> dict[str, Any]:
 
     Delete an annotation by the `xref` reported by `annotations`, together with every reply to it (recursively), and save. Same save-Okular-first caveat as mark_text."""
     return pdf.remove_annotation(path, xref)
+
+
+@tool(title="PDF: write marks into the LaTeX sources", annotations=SYNC)
+def sync_to_source(path: str) -> dict[str, Any]:
+    """Carry the PDF's highlights and notes into its LaTeX sources.
+
+    Writes the PDF's highlights and notes into its LaTeX sources as \\pdfnote/\\pdfmark macros, so a rebuild keeps them; needs a .synctex.gz next to the PDF and \\usepackage{pdfnotes}. Returns what it inserted, updated and removed. In Okular, the user must save first."""
+    return source.sync(path)
 
 
 def main() -> None:

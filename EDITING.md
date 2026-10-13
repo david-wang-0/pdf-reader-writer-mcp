@@ -1,4 +1,4 @@
-# The edit service (`pdf-reader-writer-edit`), protocol v1
+# The edit service (`pdf-reader-writer-edit`), protocol v2
 
 A PDF viewer that lets the user mark PDFs (the VS Code viewer of
 [vscode-pdf-mcp](https://github.com/david-wang-0/vscode-pdf-mcp)) writes through this
@@ -122,7 +122,20 @@ StrikeOut, Text, FileAttachment. Anything else fails with
 xref`, plus `text` for markup, `file`/`bytes` for attachments, `reply_to` and `color`
 when set), each with `irt` (0 when none), `quads` (`[]` for non-markup) and `rect`.
 
-**`ping`** `{}` → `{version: 1}`.
+**`sync`** `{path}`
+Writes the PDF's highlights and notes into its LaTeX sources as `\pdfmark`/`\pdfnote`
+macros, as the MCP `sync_to_source` does (README, "LaTeX sources"), under one exclusive
+lock on the PDF. → `{source, inserted, updated, removed, fallback, skipped}`: `source` is
+the main `.tex` file; `inserted`, `updated`, `removed` and `fallback` are lists of
+`{id, file, line, macro}` (`updated` adds `changed`, the keys rewritten; `fallback` adds
+`text`, the marked text); `skipped` lists `{xref, page, subtype, reason}`. Files are
+relative to the main file's directory. Without a SyncTeX file next to the PDF:
+`{source: null, reason: "no SyncTeX file next to the PDF (build with -synctex=1)"}`.
+Errors: `<main>.tex does not load the pdfnotes package: add \usepackage{pdfnotes} to its
+preamble`, `synctex not found on PATH (it comes with TeX Live)`.
+
+**`ping`** `{}` → `{version: 2}`. Version 2 added `sync`; the other ops are unchanged
+from version 1.
 
 ## Colours
 

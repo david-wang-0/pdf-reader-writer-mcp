@@ -30,6 +30,7 @@ and the notes travel with the file.
 | `attach_file(path, name, content, page?, note?, near_text?, replace_xref?, color?)` | Embeds a text file (`notes.md`, `diagram.mmd`, …) as a paperclip annotation in the margin. With `replace_xref` it replaces that attachment's file, and the page is found automatically |
 | `read_attachment(path, xref)` | The contents of a file-attachment annotation, decoded as text |
 | `remove_annotation(path, xref)` | Deletes an annotation by the `xref` that `annotations` reports, with every reply to it, saved incrementally |
+| `sync_to_source(path)` | Writes the PDF's highlights and notes into its LaTeX sources as `\pdfmark`/`\pdfnote` macros, so a rebuild keeps them, and reports what it inserted, updated and removed. See [LaTeX sources](#latex-sources) |
 
 Pages are 1-based. A page outside the document raises `page N outside 1-M`; a
 missing file raises `no such file: <path>`.
@@ -59,6 +60,49 @@ The model takes `path` and `page` from there and calls this server for content:
 to read on, `mark_text` or `add_note` to write back. Neither viewer server writes
 to the PDF, and this server never talks to a viewer. Both viewers watch the file
 and re-render when it changes, so there is no reload step.
+
+## LaTeX sources
+
+Marks in a PDF built from LaTeX vanish when it is rebuilt. `sync_to_source`
+carries them into the sources as macros of the `pdfnotes` package (in
+`latex/`), which turns them back into PDF annotations on every build:
+
+- a highlight, underline, squiggle or strike-out becomes
+  `\pdfmark[id=…,author=…,color=#rrggbb,style=…]{marked text}{note}` around the
+  marked words in the source;
+- a comment icon becomes `\pdfnote[id=…,author=…,color=#rrggbb]{note}` at the end
+  of its source line, before a `%` comment;
+- a reply becomes a `\pdfnote[…,replyto=<id>]` right after its parent's macro.
+
+It needs a SyncTeX file next to the PDF (build with `-synctex=1`), which maps
+each mark to its source line, and `\usepackage{pdfnotes}` in the preamble. Only
+`.tex` files in the main file's directory and below are edited, never the TeX
+tree. Each changed file is replaced atomically, with its mode and line endings.
+
+The round trip is idempotent. Sync stamps each annotation it wrote with
+`/NM pdfnotes:<id>`. A rebuild re-emits the marks with the same `/NM`, author,
+colour and note. The next sync finds every id in the sources and does nothing.
+When you change a synced note, author, style or colour in the viewer, the next
+sync rewrites only that part of the macro. Shorthands declared with
+`\newpdfnote{\name}` or `\newpdfmark{\name}` are read like the macros they
+stand for, and a hand-written macro without `id=` gets the id the package gave it.
+
+Deletions propagate only from a build with the notes active: the PDF has the
+Info key `/PDFNotes`, or at least one `pdfnotes:` annotation. Then a macro whose
+id is gone from the PDF is removed: a `\pdfnote` with the space before it, and a
+`\pdfmark` unwrapped to its marked text.
+
+Colours are compared only when the source gives `#rrggbb` or a palette name
+(`blue`, `yellow`, …), within 1/255. Other xcolor names and expressions such as
+`red!50` are left alone, and so is a colour or author the macro leaves to the
+package default.
+
+A mark whose text is not found in the source, within three lines of where
+SyncTeX puts it, becomes a `\pdfnote` with the text `“marked text”: note` at
+that line instead, and is listed under `fallback`. That happens when the marked
+text crosses a blank line, a comment, a brace group or another macro, or comes
+from a macro's expansion. Annotations that have no macro (file attachments,
+free text, ink) are listed under `skipped`.
 
 ## Marking from the viewer
 
@@ -121,6 +165,9 @@ Any other client: run `pdf-reader-writer-mcp` as a stdio server named `pdf-reade
   retried by its first six words.
 - **Highlighted text** is recovered from the annotation's quads, so it can pick
   up a neighbouring word on tight line spacing.
+- **Editors and `sync_to_source`.** A `.tex` file open in an editor with unsaved
+  edits gets a conflict when sync changes it on disk. Save the sources before a
+  sync, and save the PDF in Okular too.
 
 ## Development
 
@@ -129,7 +176,7 @@ uv venv && uv pip install -e '.[test]'
 .venv/bin/pytest
 ```
 
-`pdf_reader_writer_mcp/pdf.py` holds all PDF logic and the file lock; `server.py` is the thin MCP layer over it and `edit.py` the edit service (`.venv/bin/pdf-reader-writer-edit`).
+`pdf_reader_writer_mcp/pdf.py` holds all PDF logic and the file lock; `source.py` the sync into LaTeX sources; `server.py` is the thin MCP layer over them and `edit.py` the edit service (`.venv/bin/pdf-reader-writer-edit`). The tests that build a PDF need `pdflatex` and `synctex` on `PATH`, and are skipped without them.
 
 ## License
 

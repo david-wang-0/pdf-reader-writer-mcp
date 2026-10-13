@@ -92,6 +92,15 @@ def test_attach_file_replace_finds_target_page(sample):
     assert pdf.read_attachment(sample, x)["content"] == "new"
 
 
+def test_sync_to_source(sample, tmp_path):
+    assert server.sync_to_source(sample)["source"] is None
+    tex = tmp_path / "s.tex"
+    tex.write_text("\\documentclass{article}\n")
+    (tmp_path / "s.synctex").write_text(f"SyncTeX Version:1\nInput:1:{tex}\n")
+    with pytest.raises(server.ToolError, match=r"add \\usepackage\{pdfnotes\}"):
+        _call("sync_to_source", {"path": sample})
+
+
 # --- errors reach the model ---
 
 def _call(name, args):
@@ -133,7 +142,7 @@ def _schema(tool):
 
 
 TOOLS = {"page_text", "context", "locate", "links", "outline", "annotations", "mark_text",
-         "add_note", "attach_file", "read_attachment", "remove_annotation"}
+         "add_note", "attach_file", "read_attachment", "remove_annotation", "sync_to_source"}
 
 
 def test_server_name():
@@ -162,7 +171,8 @@ def test_tool_annotation_hints():
     hints = {n: t.annotations.model_dump(by_alias=True) for n, t in _tools().items()}
     read = {"page_text", "context", "locate", "links", "outline", "annotations", "read_attachment"}
     assert {n for n, h in hints.items() if h["readOnlyHint"]} == read
-    assert {n for n, h in hints.items() if h["destructiveHint"]} == {"remove_annotation"}
+    assert {n for n, h in hints.items() if h["destructiveHint"]} == {"remove_annotation", "sync_to_source"}
+    assert hints["sync_to_source"]["idempotentHint"] is True
     for n in ("mark_text", "add_note", "attach_file"):
         assert hints[n]["readOnlyHint"] is False and hints[n]["destructiveHint"] is False
 
