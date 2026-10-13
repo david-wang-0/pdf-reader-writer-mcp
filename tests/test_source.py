@@ -518,6 +518,9 @@ def test_package_round_trip(paper):
     pdf.add_note(path, 1, "a note", near_text="special sentence", author="me")
     r = source.sync(path)
     ids = {i["id"] for i in r["inserted"]}
+    adopted = [u["id"] for u in r["updated"] if u.get("changed") == ["id"]]
+    assert len(adopted) == 1 and f"\\question[id={adopted[0]}]" in (paper / "doc.tex").read_text()
+    ids |= set(adopted)  # the hand-written \question is a real note with the package's automatic id
     path = build(paper, REAL)
     with pymupdf.open(path) as doc:
         back = {a.info["id"][len(source.NM_PREFIX):]: a for pg in doc for a in pg.annots()
