@@ -418,3 +418,42 @@ def test_mcp_write_tools_take_the_lock(sample, monkeypatch):
                       lambda: server.remove_annotation(sample, 1)):
             with pytest.raises(TimeoutError, match="PDF is locked by another writer"):
                 call_()
+
+
+# --- annotations and snapshots from elsewhere ---
+
+def test_restyle_an_annotation_without_nm(sample):
+    """Other programs may write no /NM: a style change works the same."""
+    x = call("mark", path=sample, page=1, rects=[pdf_rect(sample, 1, "fox")], author="David")["xref"]
+    with pdf._open(sample, write=True) as doc:
+        doc.xref_set_key(x, "NM", "null")
+    new = call("update", path=sample, xref=x, style="underline")["xref"]
+    (a,) = pdf.annotations(sample)
+    assert a["xref"] == new and a["type"] == "Underline" and a["text"] == "fox"
+    assert not call("snapshot", path=sample, xref=new)["nm"].startswith("pdfnotes:")
+
+
+def test_restore_a_protocol_1_snapshot(sample):
+    """A client from before protocol 2 keeps snapshots without ``nm``; they restore."""
+    x = call("note", path=sample, page=1, point=[60, 700], note="old client", author="David")["xref"]
+    (snap,) = call("delete", path=sample, xref=x)["snapshots"]
+    del snap["nm"]
+    new = call("restore", path=sample, snapshots=[snap])["xrefs"][str(x)]
+    assert {a["xref"]: a["note"] for a in pdf.annotations(sample)} == {new: "old client"}
+
+
+def test_restore_an_attachment_without_colour(sample):
+    a = pdf.attach_file(sample, 1, "n.md", "body")["xref"]
+    (snap,) = call("delete", path=sample, xref=a)["snapshots"]
+    snap["color"] = None
+    new = call("restore", path=sample, snapshots=[snap])["xrefs"][str(a)]
+    assert pdf.read_attachment(sample, new)["content"] == "body"
+
+
+def test_a_bug_in_an_op_is_reported_and_the_service_goes_on(monkeypatch):
+    def broken():
+        return 1 // 0
+    monkeypatch.setitem(edit.OPS, "ping", broken)
+    assert edit.handle({"id": 5, "op": "ping"}) == {"id": 5, "ok": False, "error": "ZeroDivisionError: integer division or modulo by zero"}
+    monkeypatch.undo()
+    assert edit.handle({"id": 6, "op": "ping"})["ok"]

@@ -117,6 +117,63 @@ def test_note_point_before_comment_and_after_blank_lines():
     assert s.text[note_point(s, 1):].startswith(" rest")  # not inside the mark
 
 
+def test_scanner_option_forms():
+    text = r"\pdfnote[id=a, draft, author= {X Y} ,,]{n} \pdfnote[author=A\,B,id=b]{m}"
+    a, b = scan(text, NAMES)
+    assert [(o.key, o.value, o.vspan is None) for o in a.opts] == [
+        ("id", "a", False), ("draft", "", True), ("author", "X Y", False)]
+    assert b.opt("author") == "A\\,B" and b.id == "b"
+    assert scan("\\pdfnote[id=a]\n  {n}", NAMES)[0].id == "a"  # one line break may separate
+
+
+@pytest.mark.parametrize("text", [
+    r"\pdfnote[id=a{n}", r"\pdfnote[id=a]", r"\pdfmark{a}", "\\pdfnote[id=a]\n\n{n}",
+    r"\pdfnote[id=a}{n}", r"\pdfnote{unclosed", r"\pdfmark{a}{unclosed",
+])
+def test_scanner_skips_incomplete_macros(text):
+    """A macro a blank line, a missing argument or an unbalanced group cuts short is not
+    one (TeX would not read it as one either), and editing it would break the source."""
+    assert scan(text, NAMES) == []
+
+
+@pytest.mark.parametrize("tex,shown", [
+    ("a\\par b", "a\0b"), ("50\\% off", "50% off"), ("line\\\\next", "line next"),
+    ("exam\\-ple", "example"), ("Fig.~1", "Fig. 1"), ("the \\relax   fox", "the fox"),
+    ("a\\ b", "a b"), ("\\,x", "x"), ("$x$ and {y}", "x and y"),
+])
+def test_visible_text(tex, shown):
+    assert source._visible(tex, 0, len(tex), [])[0] == shown
+
+
+def test_match_through_source_markup():
+    assert found(src("an exam\\-ple here"), "example", 1) == "exam\\-ple"
+    assert found(src("as Fig.~1 shows"), "Fig. 1 shows", 1) == "Fig.~1 shows"
+    assert found(src("only 50\\% off"), "50% off", 1) == "50\\% off"
+    assert found(src("a\\par b"), "a b", 1) is None
+    assert found(src("{the fox} jumps"), "fox jumps", 1) is None  # would close a group it did not open
+    assert find_text(src("x"), "  ", 1) is None
+    s = src("the fox\nx\nthe fox\n")
+    assert s.line_of(find_text(s, "the fox", 1)[0]) == 1 and s.line_of(find_text(s, "the fox", 3)[0]) == 3
+
+
+def test_overlapping_edits_keep_the_first():
+    s = Source("x.tex", "abcdef")
+    s.edits = [(1, 4, "X", 0), (2, 3, "Y", 1), (4, 4, "!", 2)]
+    assert s.result() == "aX!ef"
+
+
+def test_a_failed_write_leaves_the_source_and_no_temp_file(tmp_path, monkeypatch):
+    f = tmp_path / "a.tex"
+    f.write_text("old\n")
+
+    def full(src, dst):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(source.os, "replace", full)
+    with pytest.raises(OSError, match="No space left"):
+        source._write(str(f), "new\n", False)
+    assert f.read_text() == "old\n" and os.listdir(tmp_path) == ["a.tex"]
+
+
 # --- sync without TeX: a PyMuPDF page, a fake SyncTeX file ---
 
 LINES = ["The quick brown fox jumps over the lazy dog.", "A second line with words."]
@@ -462,6 +519,97 @@ def test_synctex_lines_past_the_end_of_a_source(fake, monkeypatch):
     assert [i["macro"] for i in r["inserted"]] == ["pdfmark"] and "{brown fox}{}" in tex.read_text()
     reason = "SyncTeX maps it to no editable source line"
     assert {(k["xref"], k["reason"]) for k in r["skipped"]} == {(stale, reason), (note, reason)}
+
+
+def test_sync_needs_input_files(fake, tmp_path):
+    path, _ = fake(PRE + "x\n\\end{document}\n")
+    (tmp_path / "doc.synctex").write_text("SyncTeX Version:1\n")
+    with pytest.raises(ValueError, match=r"doc\.synctex names no input files$"):
+        source.sync(path)
+
+
+def test_sync_without_author_or_colour_and_with_a_kind(fake):
+    """Keys the annotation has no value for are left out; a /Subj a viewer would not
+    write by itself is the note's kind."""
+    path, tex = fake(PRE + LINES[0] + "\n" + LINES[1] + "\n\\end{document}\n")
+    with pdf._open(path, write=True) as doc:
+        pg = doc[0]
+        a = pg.add_text_annot((60, 95), "bare")
+        doc.xref_set_key(a.xref, "C", "null")
+        b = pg.add_text_annot((60, 115), "a question")
+        b.set_info(title="me", subject="question")
+        b.update()
+        c = pg.add_text_annot((60, 116), "plain")
+        c.set_info(title="me", subject="Sticky Note")
+        c.update()
+    r = source.sync(path)
+    ids = [i["id"] for i in r["inserted"]]
+    text = tex.read_text()
+    assert f"\\pdfnote[id={ids[0]}]{{bare}}" in text
+    assert f"\\pdfnote[id={ids[1]},author=me,color=#ffff00,kind=question]{{a question}}" in text
+    assert f"\\pdfnote[id={ids[2]},author=me,color=#ffff00]{{plain}}" in text
+
+
+def test_sync_reports_no_popups_links_or_widgets(fake):
+    path, tex = fake(PRE + LINES[0] + "\n\\end{document}\n")
+    with pdf._open(path, write=True) as doc:
+        pg = doc[0]
+        n = pg.add_text_annot((60, 95), "with a popup")
+        n.set_popup(pymupdf.Rect(300, 50, 400, 150))
+        n.update()
+        pg.insert_link({"kind": pymupdf.LINK_URI, "from": pymupdf.Rect(72, 90, 120, 102), "uri": "https://example.org"})
+        w = pymupdf.Widget()
+        w.field_name, w.field_type, w.rect = "f", pymupdf.PDF_WIDGET_TYPE_TEXT, pymupdf.Rect(300, 300, 400, 320)
+        pg.add_widget(w)
+    r = source.sync(path)
+    assert [i["macro"] for i in r["inserted"]] == ["pdfnote"] and r["skipped"] == []
+
+
+def test_a_mark_split_by_a_page_break_is_one_macro(fake):
+    """pdfnotes emits a mark across a page break as two annotations with one /NM."""
+    path, tex = fake(PRE + "The quick \\pdfmark[id=pb]{brown fox jumps}{} over the lazy dog.\n\\end{document}\n")
+    for words in ("brown fox", "jumps"):
+        set_nm(path, pdf.mark_text(path, 1, words)["xref"], "pdfnotes:pb")
+    before = tex.read_text()
+    assert quiet(source.sync(path)) and tex.read_text() == before
+
+
+def test_a_bare_key_gets_its_value(fake):
+    path, tex = fake(PRE + "The quick brown fox \\pdfnote[id=n1,author]{n} jumps\n\\end{document}\n")
+    n = pdf.add_note(path, 1, "n", author="you")["xref"]
+    set_nm(path, n, "pdfnotes:n1")
+    r = source.sync(path)
+    assert r["updated"][0]["changed"] == ["author"]
+    assert "\\pdfnote[id=n1,author=you]{n} jumps" in tex.read_text()
+
+
+def test_a_hand_written_reply_goes_with_its_parent(fake):
+    """A reply written in the source with replyto= but no id of its own."""
+    path, tex = fake(PRE + "The quick \\pdfmark[id=m1]{brown fox}{} \\pdfnote[replyto=m1]{by hand} jumps\n\\end{document}\n")
+    m = pdf.mark_text(path, 1, "brown fox")["xref"]
+    set_nm(path, m, "pdfnotes:m1")
+    pdf.remove_annotation(path, m)
+    r = source.sync(path)
+    assert sorted((x["id"], x["macro"]) for x in r["removed"]) == [("", "pdfnote"), ("m1", "pdfmark")]
+    assert "The quick brown fox jumps\n" in tex.read_text()
+
+
+def test_a_note_far_from_any_text(fake, monkeypatch):
+    """A note in an empty part of the page is looked up where its icon is."""
+    path, tex = fake(PRE + LINES[0] + "\n" + LINES[1] + "\n\\end{document}\n")
+    pdf.add_note(path, 1, "far away")
+    with pdf._open(path, write=True) as doc:
+        pg = doc[0]
+        a = next(pg.annots())
+        a.set_rect(pymupdf.Rect(500, 600, 520, 620))
+        a.update()
+        r = a.rect
+        icon = ((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)
+    probes = []
+    inner = source.synctex_edit
+    monkeypatch.setattr(source, "synctex_edit", lambda p, page, x, y: probes.append((x, y)) or inner(p, page, x, 100))
+    r = source.sync(path)
+    assert probes == [icon] and icon[1] > 600 and [i["macro"] for i in r["inserted"]] == ["pdfnote"]
 
 
 def test_edit_op_sync(fake):

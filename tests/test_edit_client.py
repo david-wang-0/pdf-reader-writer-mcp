@@ -518,3 +518,15 @@ def test_page_count_changes_between_requests(service, sample):
     with open(sample, "wb") as f:
         f.write(data)
     assert service.error("mark", path=sample, page=2, rects=[rect], author="D") == "page 2 outside 1-1"
+
+
+def test_the_service_exits_when_the_client_is_gone():
+    """The extension host died: stdout has no reader any more. The service stops at the
+    next answer it cannot write, with exit 0, instead of serving nobody."""
+    p = subprocess.Popen(EDIT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p.stdout.close()
+    p.stdin.write(b'{"id": 1, "op": "ping"}\n' * 3)
+    p.stdin.flush()
+    assert p.wait(30) == 0
+    p.stdin.close()
+    p.stderr.close()

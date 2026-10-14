@@ -1,3 +1,5 @@
+import os
+
 import pymupdf
 import pytest
 
@@ -409,3 +411,120 @@ def test_missing_file(tmp_path):
                  lambda: pdf.locate(gone, 1, "x"), lambda: pdf.mark_text(gone, 1, "x")):
         with pytest.raises(FileNotFoundError, match=f"no such file: {gone}"):
             call()
+
+
+# --- files and annotations written by other programs ---
+
+def test_a_repaired_pdf_is_read_but_not_written(sample):
+    """A broken xref table is repaired in memory on open; an incremental save on top of
+    it would be appended to bytes MuPDF no longer reads as they are, so writes refuse."""
+    data = open(sample, "rb").read()
+    i = data.rindex(b"startxref")
+    broken = data[:i] + b"startxref\n9999999\n%%EOF\n"
+    with open(sample, "wb") as f:
+        f.write(broken)
+    assert "lazy dog" in pdf.page_text(sample, 1) and pdf.annotations(sample) == []
+    with pytest.raises(RuntimeError, match=r"^document cannot be saved incrementally \(encrypted or repaired\?\)$"):
+        pdf.mark_text(sample, 1, "lazy dog")
+    assert open(sample, "rb").read() == broken
+
+
+def test_a_file_removed_during_a_write(sample, monkeypatch):
+    real = pdf.add_markup
+
+    def removed(*args, **kwargs):
+        a = real(*args, **kwargs)
+        os.remove(sample)
+        return a
+    monkeypatch.setattr(pdf, "add_markup", removed)
+    with pytest.raises(RuntimeError, match="the PDF changed on disk while it was being written"):
+        pdf.mark_text(sample, 1, "fox")
+    assert not os.path.exists(sample)
+
+
+def test_a_file_removed_after_the_existence_check(sample, monkeypatch, tmp_path):
+    gone = str(tmp_path / "gone.pdf")
+    monkeypatch.setattr(pdf.os.path, "isfile", lambda p: True)
+    with pytest.raises(FileNotFoundError, match=f"^no such file: {gone}$"):
+        pdf.page_text(gone, 1)
+
+
+def _edit_doc(path, fn):
+    with pymupdf.open(path) as doc:
+        fn(doc)
+        doc.saveIncr()
+
+
+def test_marks_as_other_viewers_write_them(sample):
+    """Okular and pdf.js write highlights with opacity, sometimes without /C; a quad may
+    be given twice. The marked text is each word once; no colour means no "color"."""
+    def write(doc):
+        pg = doc[0]
+        fox = pg.search_for("fox", quads=True)[0]
+        h = pg.add_highlight_annot([fox, fox])
+        h.set_opacity(0.4)
+        h.update()
+        u = pg.add_underline_annot(pg.search_for("lazy", quads=True))
+        doc.xref_set_key(u.xref, "C", "null")
+    _edit_doc(sample, write)
+    h, u = pdf.annotations(sample)
+    assert h["text"] == "fox" and "color" in h
+    assert u["text"] == "lazy" and "color" not in u
+
+
+def test_opacity_survives_restyle_delete_and_restore(sample):
+    from pdf_reader_writer_mcp import edit
+
+    def write(doc):
+        pg = doc[0]
+        h = pg.add_highlight_annot(pg.search_for("brown fox", quads=True))
+        h.set_opacity(0.4)
+        h.update()
+        n = pg.add_text_annot((30, 30), "translucent note")
+        n.set_opacity(0.5)
+        n.update()
+    _edit_doc(sample, write)
+    h, n = (a["xref"] for a in pdf.annotations(sample))
+    h = edit.update(sample, h, style="underline")["xref"]
+    snaps = edit.delete(sample, h)["snapshots"] + edit.delete(sample, n)["snapshots"]
+    assert [round(s["opacity"], 3) for s in snaps] == [0.4, 0.5]
+    xrefs = edit.restore(sample, snaps)["xrefs"]
+    with pymupdf.open(sample) as doc:
+        pg = doc[0]  # an Annot must not outlive its Page
+        back = {a.xref: a for a in pg.annots()}
+        assert [round(back[x].opacity, 2) for x in xrefs.values()] == [0.4, 0.5]
+        assert back[xrefs[str(h)]].type[1] == "Underline"
+
+
+def test_a_reply_cycle_is_one_thread(sample):
+    """Two notes replying to each other (a broken /IRT chain): deleting either takes both,
+    and nothing loops."""
+    a = pdf.add_note(sample, 1, "a")["xref"]
+    b = pdf.add_note(sample, None, "b", reply_to=a)["xref"]
+    with pdf._open(sample, write=True) as doc:
+        doc.xref_set_key(a, "IRT", f"{b} 0 R")
+    with pymupdf.open(sample) as doc:
+        assert pdf.thread(doc, a) == [a, b] and pdf.thread(doc, b) == [b, a]
+    r = pdf.remove_annotation(sample, a)
+    assert r["replies"] == [b] and pdf.annotations(sample) == []
+
+
+def test_links_to_odd_targets(tmp_path):
+    """A link to a point below the last line goes to the last line, to an empty page to no
+    line; two links to one page read it once; a launch link is no use to a reader."""
+    path = str(tmp_path / "t.pdf")
+    doc = pymupdf.open()
+    for _ in range(3):
+        doc.new_page()
+    p1, p2 = doc[0], doc[1]
+    p1.insert_text((72, 72), "One two three four.")
+    p2.insert_text((72, 72), "Only line on page two.")
+    words = {w[4]: pymupdf.Rect(w[:4]) for w in p1.get_text("words")}
+    p1.insert_link({"kind": pymupdf.LINK_GOTO, "from": words["One"], "page": 1, "to": pymupdf.Point(72, 700)})
+    p1.insert_link({"kind": pymupdf.LINK_GOTO, "from": words["two"], "page": 1, "to": pymupdf.Point(72, 60)})
+    p1.insert_link({"kind": pymupdf.LINK_GOTO, "from": words["three"], "page": 2, "to": pymupdf.Point(72, 60)})
+    p1.insert_link({"kind": pymupdf.LINK_LAUNCH, "from": words["four."], "file": "other.pdf"})
+    doc.save(path); doc.close()
+    ls = pdf.links(path, 1)
+    assert [(l["text"], l["page"], l["target_line"]) for l in ls] == [("One", 2, 1), ("two", 2, 1), ("three", 3, None)]
+    assert all("url" not in l for l in ls)
