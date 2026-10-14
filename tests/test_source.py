@@ -447,6 +447,23 @@ def test_sync_through_a_symlinked_pdf(fake, tmp_path):
     assert edit.handle({"id": 1, "op": "sync", "path": str(link)})["result"]["inserted"] == []
 
 
+def test_synctex_lines_past_the_end_of_a_source(fake, monkeypatch):
+    """Regression: SyncTeX data older than the source (lines deleted since the build, or a
+    failed rebuild) can name a line past the end of the file; that aborted the whole sync
+    with "list index out of range". Such a mark is skipped, and the others are synced."""
+    path, tex = fake(PRE + LINES[0] + "\n" + LINES[1] + "\n\\end{document}\n")
+    stale = pdf.mark_text(path, 1, "second line")["xref"]
+    note = pdf.add_note(path, 1, "a note", near_text="second line")["xref"]
+    pdf.mark_text(path, 1, "brown fox")
+    inner = source.synctex_edit
+    monkeypatch.setattr(source, "synctex_edit",
+                        lambda p, page, x, y: [(str(tex), 40)] if y > 105 else inner(p, page, x, y))
+    r = source.sync(path)
+    assert [i["macro"] for i in r["inserted"]] == ["pdfmark"] and "{brown fox}{}" in tex.read_text()
+    reason = "SyncTeX maps it to no editable source line"
+    assert {(k["xref"], k["reason"]) for k in r["skipped"]} == {(stale, reason), (note, reason)}
+
+
 def test_edit_op_sync(fake):
     path, tex = fake(PRE + LINES[0] + "\n\\end{document}\n")
     pdf.mark_text(path, 1, "lazy dog")

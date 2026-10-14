@@ -757,8 +757,10 @@ class _Sync:
                 self.misses.add(key)
                 return []
             self.cache[key] = synctex_edit(self.path, *key)  # added or moved since the plan
-        hits = self.cache[key]
-        return [(self.srcs[f], n) for f, n in hits if f in self.srcs]
+        # A line past the end is SyncTeX data older than the source (lines deleted since
+        # the build): no place to put the mark.
+        return [(self.srcs[f], n) for f, n in self.cache[key]
+                if f in self.srcs and 1 <= n <= len(self.srcs[f].starts)]
 
     def _opts(self, r: _Rec, nid: str, style: bool) -> list[tuple[str, str]]:
         o = [("id", nid)]
