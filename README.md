@@ -187,12 +187,15 @@ Any other client: run `pdf-reader-writer-mcp` as a stdio server named `pdf-reade
 - **Lines are reconstructed.** A PDF has no lines. `page_text`, `context` and
   `locate` use PyMuPDF's block and line grouping, so a two-column page reads
   column by column, and equations or footnotes can land in odd places.
-- **Search is literal.** `mark_text`, `context` and `locate` search the page's
-  text layer. Ligatures (fi, fl, ff) and accented letters in some fonts do not
-  match their plain spelling, so quote a plain-ASCII span instead. Whitespace
-  and line breaks in the quote are normalised. For `context` and `locate`, a
-  passage that is not found whole (a selection across columns or pages) is
-  retried by its first six words.
+- **Search takes a selection as viewers give it.** `mark_text`, `context` and
+  `locate` search the page's text layer, case-insensitively, first literally,
+  then tolerantly: a quote may join lines with spaces or newlines, keep or drop
+  a hyphen that ends a line (Okular keeps `dif-`/`ficult`, the VS Code viewer
+  gives `difficult`), and spell a ligature (fi, fl, ffi) either way; spacing is
+  not compared. An accented letter that the font extracts as two characters
+  (an accent and the letter) still needs the page's spelling. For `context` and
+  `locate`, a passage that is not found whole (a selection across columns or
+  pages) is retried by its first six words.
 - **Highlighted text** is recovered from the annotation's quads, so it can pick
   up a neighbouring word on tight line spacing.
 - **The real `pdfnotes` needs two LaTeX runs.** Mark positions come from the

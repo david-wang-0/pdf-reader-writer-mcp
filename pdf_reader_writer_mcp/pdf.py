@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import time
+import unicodedata
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -108,18 +110,82 @@ def _check_page(doc: pymupdf.Document, page: int) -> None:
 
 
 def _lines(pg: pymupdf.Page) -> list[dict[str, Any]]:
-    """The page's text lines in reading order, numbered from 1, with their block.
+    """The page's text lines in reading order, numbered from 1, with their block
+    and their characters (``(c, bbox)``).
 
     Lines come from PyMuPDF's block/line structure (grouped by position), so a
     two-column page yields the left column first, then the right.
     """
     out: list[dict[str, Any]] = []
-    for b, block in enumerate(pg.get_text("dict")["blocks"]):
+    for b, block in enumerate(pg.get_text("rawdict")["blocks"]):
         for line in block.get("lines", []):
-            text = "".join(span["text"] for span in line["spans"]).strip()
+            chars = [(c["c"], c["bbox"]) for span in line["spans"] for c in span["chars"]]
+            text = "".join(c for c, _ in chars).strip()
             if text:
                 out.append({"n": len(out) + 1, "text": text, "block": b,
-                            "bbox": pymupdf.Rect(line["bbox"])})
+                            "bbox": pymupdf.Rect(line["bbox"]), "chars": chars})
+    return out
+
+
+def _fold(text: str) -> str:
+    """Text as a selection is compared with the page: compatibility characters spelt
+    out (NFKC: ligatures such as U+FB01 become "fi", a no-break space a space), soft
+    hyphens dropped, case folded."""
+    return unicodedata.normalize("NFKC", text).replace("\u00ad", "").casefold()
+
+
+def _stream(ls: list[dict[str, Any]]) -> tuple[str, list[tuple[int, Any]]]:
+    """The page's lines as one folded string without whitespace, and for each of its
+    characters the line number and box. A hyphen that ends a line between two letters
+    is dropped, so ``dif-`` / ``ficult`` reads ``difficult``, as a pdf.js selection or
+    a dehyphenated quote has it."""
+    chars: list[str] = []
+    where: list[tuple[int, Any]] = []
+    for line in ls:
+        first = True
+        for c, bbox in line["chars"]:
+            for ch in _fold(c):
+                if ch.isspace():
+                    continue
+                if first and len(chars) >= 2 and chars[-1] == "-" and chars[-2].isalpha() and ch.isalpha():
+                    chars.pop()
+                    where.pop()
+                first = False
+                chars.append(ch)
+                where.append((line["n"], bbox))
+    return "".join(chars), where
+
+
+def _pattern(text: str) -> re.Pattern[str] | None:
+    """A selection or quote as a pattern over ``_stream``: folded, whitespace ignored,
+    and a hyphen after a letter optional (it may be the one dropped at a line end)."""
+    s = "".join(_fold(text).split())
+    if not s:
+        return None
+    out = []
+    for i, ch in enumerate(s):
+        if ch == "-" and i and s[i - 1].isalpha() and (i + 1 == len(s) or s[i + 1].isalpha()):
+            out.append("-?")
+        else:
+            out.append(re.escape(ch))
+    return re.compile("".join(out))
+
+
+def _matches(ls: list[dict[str, Any]], text: str) -> list[list[tuple[int, pymupdf.Rect]]]:
+    """Every occurrence of ``text`` in the lines ``ls``, tolerant of what viewers do to
+    a selection (``_stream``, ``_pattern``): per occurrence, ``(line number, box)`` for
+    each line it covers, the box spanning its characters on that line."""
+    pat = _pattern(text)
+    if pat is None:
+        return []
+    stream, where = _stream(ls)
+    out = []
+    for m in pat.finditer(stream):
+        per: dict[int, pymupdf.Rect] = {}
+        for n, bbox in where[m.start():m.end()]:
+            r = pymupdf.Rect(bbox)
+            per[n] = per[n] | r if n in per else r
+        out.append(sorted(per.items()))
     return out
 
 
@@ -165,18 +231,21 @@ def _hit_lines(pg: pymupdf.Page, text: str, page: int) -> tuple[str, list[dict[s
     needle = " ".join(text.split())
     if not needle:
         raise ValueError("text is empty: pass the user's selection or a quote from the page")
-    hits = pg.search_for(needle)
-    if not hits:
-        # Long selections can cross columns or pages: fall back to their first words.
-        hits = pg.search_for(" ".join(needle.split()[:6]))
-    if not hits:
-        raise LookupError(f"selection not found on page {page}: {needle[:60]!r}")
     ls = _lines(pg)
-    # the line that holds a hit's centre: line boxes may touch or overlap
-    hit_lines = [l for l in ls if any((h.tl + h.br) / 2 in l["bbox"] for h in hits)]
-    if not hit_lines:
-        raise LookupError("selection found but not attributable to a text line")
-    return needle, ls, hit_lines
+    # Long selections can cross columns or pages: fall back to their first words.
+    for part in (needle, " ".join(needle.split()[:6])):
+        hits = pg.search_for(part)
+        if hits:
+            # the line that holds a hit's centre: line boxes may touch or overlap
+            hit_lines = [l for l in ls if any((h.tl + h.br) / 2 in l["bbox"] for h in hits)]
+            if not hit_lines:
+                raise LookupError("selection found but not attributable to a text line")
+            return needle, ls, hit_lines
+        # Not literally on the page: dehyphenated (pdf.js), ligatures spelt out, other spacing.
+        found = {n for occ in _matches(ls, part) for n, _ in occ}
+        if found:
+            return needle, ls, [l for l in ls if l["n"] in found]
+    raise LookupError(f"selection not found on page {page}: {needle[:60]!r}")
 
 
 def locate(path: str, page: int, text: str) -> dict[str, Any] | None:
@@ -419,6 +488,10 @@ def _find_quads(pg: pymupdf.Page, text: str, page: int) -> list[pymupdf.Quad]:
     if not quads:
         # Retry with whitespace normalised: selections often carry line breaks.
         quads = pg.search_for(" ".join(text.split()), quads=True)
+    if not quads:
+        # A selection as pdf.js gives it (dehyphenated, ligatures spelt out): one quad
+        # per line of each occurrence.
+        quads = [r.quad for occ in _matches(_lines(pg), text) for _, r in occ]
     if not quads:
         raise LookupError(f"text not found on page {page}: {text[:60]!r}")
     return quads
