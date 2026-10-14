@@ -389,6 +389,20 @@ def test_locate_with_touching_line_boxes(tmp_path):
     assert pdf.locate(path, 1, "bbb\nficult") == {"page": 1, "lines": "1-2"}
 
 
+@pytest.mark.parametrize("blank", [" ", "   ", "\n", "\t ", ""])
+def test_blank_text_marks_nothing(sample, blank):
+    """Regression: a blank quote was searched as such, and MuPDF found every space on the
+    page: mark_text saved an invisible highlight over them."""
+    with pytest.raises(ValueError, match="^text is empty"):
+        pdf.mark_text(sample, 1, blank)
+    if blank:
+        with pytest.raises(ValueError, match="^text is empty"):
+            pdf.add_note(sample, 1, "n", near_text=blank)
+        with pytest.raises(ValueError, match="^text is empty"):
+            pdf.attach_file(sample, 1, "a.md", "x", near_text=blank)
+    assert pdf.annotations(sample) == []
+
+
 def test_missing_file(tmp_path):
     gone = str(tmp_path / "gone.pdf")
     for call in (lambda: pdf.page_text(gone, 1), lambda: pdf.outline(gone), lambda: pdf.annotations(gone),

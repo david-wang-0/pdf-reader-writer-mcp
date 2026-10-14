@@ -529,6 +529,8 @@ def add_markup(pg: pymupdf.Page, quads: list[pymupdf.Quad], style: str,
 
 
 def _find_quads(pg: pymupdf.Page, text: str, page: int) -> list[pymupdf.Quad]:
+    if not text.split():  # MuPDF finds a blank everywhere there is a space
+        raise ValueError("text is empty: quote the passage from the page")
     quads = pg.search_for(text, quads=True)
     if not quads:
         # Retry with whitespace normalised: selections often carry line breaks.
