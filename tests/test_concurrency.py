@@ -4,12 +4,16 @@ rewriting the file in place or by renaming a new file over it."""
 
 import fcntl
 import os
+import subprocess
+import sys
 import threading
+import time
 
 import pymupdf
 import pytest
 
 from pdf_reader_writer_mcp import edit, pdf, source
+from test_edit_client import Service, fake_tex, pdf_rect  # noqa: F401 (fake_tex is a fixture)
 
 
 @pytest.fixture
@@ -146,3 +150,82 @@ def test_a_file_removed_while_waiting(sample, monkeypatch):
     with pytest.raises(FileNotFoundError, match=f"no such file: {sample}"):
         pdf.add_note(sample, 1, "n")
     held.close()
+
+
+# --- the MCP server and the edit service at the same time, as processes ---
+
+N = 30
+
+MCP_WRITER = """
+import sys
+from pdf_reader_writer_mcp import server
+path, n = sys.argv[1], int(sys.argv[2])
+print("ready", flush=True)
+sys.stdin.readline()
+for i in range(n):
+    server.mark_text(path, 1, f"m{i}x", note=f"mcp {i}")
+print("done", flush=True)
+"""
+
+
+@pytest.fixture
+def words(tmp_path):
+    """A page of distinct words e0x.. and m0x.., in a build directory, and a link to it."""
+    (tmp_path / "build").mkdir()
+    real = tmp_path / "build" / "w.pdf"
+    doc = pymupdf.open()
+    pg = doc.new_page()
+    for row, prefix in enumerate("em"):
+        for i in range(N):
+            pg.insert_text((40 + 36 * (i % 14), 60 + 220 * row + 14 * (i // 14)), f"{prefix}{i}x", fontsize=9)
+    doc.save(real); doc.close()
+    link = tmp_path / "w.pdf"
+    link.symlink_to(real)
+    return str(link), str(real)
+
+
+def test_mcp_by_link_and_edit_service_by_realpath(words):
+    """Okular's path for the model, the VS Code viewer's realpath for the user: both
+    writers lock the one file, so all 2N marks land and the file opens without repair."""
+    link, real = words
+    s = Service()
+    w = subprocess.Popen([sys.executable, "-c", MCP_WRITER, link, str(N)], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert s.request("ping")["version"] == 2 and w.stdout.readline().strip() == "ready"
+        lines = [s.line("mark", path=real, page=1, rects=[pdf_rect(real, 1, f"e{i}x")], author="e")[1] for i in range(N)]
+        s.send(*lines)
+        w.stdin.write("go\n"); w.stdin.flush()
+        assert all(s.answer()["ok"] for _ in range(N))
+        out, err = w.communicate(timeout=120)
+        assert w.returncode == 0 and out.strip() == "done", err
+    finally:
+        assert s.close() == 0
+    assert notes(real).count("Highlight") == N
+    texts = {a["text"] for a in pdf.annotations(link)}
+    assert texts == {f"{p}{i}x" for p in "em" for i in range(N)}
+
+
+def test_marks_made_while_a_sync_runs(fake_tex):
+    """sourcesync.js syncs after the user's burst of marks; the model marks meanwhile
+    through the MCP server. The sync's SyncTeX lookups (slowed down here) hold no lock,
+    so the model's marks wait for nothing and none is lost; the next sync takes them."""
+    path, tex, env = fake_tex(delay=0.15)
+    s = Service(env)
+    try:
+        for word in ("quick", "brown", "lazy"):
+            s.request("mark", path=path, page=1, rects=[pdf_rect(path, 1, word)], author="David")
+        rid, line = s.line("sync", path=path)
+        s.send(line)
+        t0 = time.monotonic()
+        model = [pdf.mark_text(path, 1, w, note="model") for w in ("second", "line", "words")]
+        assert time.monotonic() - t0 < 0.5 * 3  # not stuck behind the sync's lookups
+        first = s.answer()
+        assert first["id"] == rid and first["ok"], first
+        second = s.request("sync", path=path)
+        inserted = len(first["result"]["inserted"]) + len(second["inserted"])
+        assert inserted == 6 and s.request("sync", path=path)["inserted"] == []
+    finally:
+        assert s.close() == 0
+    assert len(model) == 3 and len(notes(path)) == 6
+    assert tex.read_text().count("\\pdfmark[") == 6
