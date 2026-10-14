@@ -46,14 +46,18 @@ there.
 \newpdfnote{\todobob}{author=Bob,color=orange,kind=todo,prefix={Bob: }}
 \newpdfnote{\donealice}{author=Alice,color=green,kind=done}
 \newpdfmark{\flagalice}{author=Alice,color=pink,textcolor=orange,kind=todo}
+\newpdfmark{\removealice}{author=Alice,color=red,style=strikeout,remove}
 ...
 Regions are finite.\todoalice{Cite the region bound.}
 \flagalice{This sentence is too long}{Split it.}
+\removealice{This sentence goes.}{Remove}
 ```
 
 `\todoalice{...}` is `\todo[backgroundcolor=...]{...}` plus the annotation, and
 `\flagalice{text}{note}` typesets `text` in orange with a highlight over it and the note
 in a todonotes box. Any todonotes option passes through: `\todoalice[inline]{...}`.
+`\removealice{text}{note}` strikes `text` out, and a build without notes leaves it out,
+so that build shows the page count without the passages already decided to be cut.
 
 Build with **two runs** (latexmk, LaTeX Workshop and Overleaf do this by themselves): the
 annotations are placed from positions recorded in the `.aux` file in the run before, as
@@ -63,7 +67,9 @@ which makes latexmk run again. A third run is needed only when the layout moved.
 **Builds without notes.** `\usepackage[disable]{todonotes}` (as a nocomments or submission
 build loads it), or `\usepackage[disable]{pdfnotes}` (also `final`), switches everything
 off: no todonotes boxes, no annotations, no `/PDFNotes` key, and a mark typesets its text
-plainly. The package option passes `disable` on to todonotes when todonotes is not loaded
+plainly. A mark with the `remove` key is left out instead, with everything inside it
+(footnotes, `\label`s, so references to those labels are undefined in that build), and
+one space is left where it stood. The package option passes `disable` on to todonotes when todonotes is not loaded
 yet, so plain `\todo`s go too. A class option `final` (IEEEtran and others take one) does
 not switch the notes off.
 
@@ -100,6 +106,7 @@ value that contains a comma or `=` goes in braces: `author={Smith, J.}`.
 | `textcolor` | none | Marks: the colour of the marked text |
 | `note` | `true` | Marks: also show the note in a todonotes box (that box has no annotation of its own) |
 | `notecolor` | `color` | Marks: the colour of that box |
+| `remove` | `false` | Marks: in a build without notes, leave the marked text out instead of typesetting it (a bare `remove` is `remove=true`). With the notes on it changes nothing; it is not part of the id and not written to the PDF. `\pdfnote` ignores it |
 | `todo={...}` | | todonotes options; any key not listed here also goes to todonotes |
 
 ### What is written

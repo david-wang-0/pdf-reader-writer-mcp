@@ -361,6 +361,63 @@ Some \flagalice{marked words}{hidden} here, \pdfmark[note=false]{more}{x} and \p
     assert "Hidden" not in text and "hidden" not in text and "todo" not in text
 
 
+
+REMOVE = r"\newpdfmark{\removealice}{author=Alice,color=red,style=strikeout,remove}"
+
+
+@pytest.mark.parametrize("variant", ["todonotes-disable", "option-disable"])
+def test_disabled_builds_drop_the_text_of_remove_marks(tmp_path, variant):
+    """With the notes off, a mark with `remove` leaves nothing, and one space where it stood;
+    `remove=false` after a shorthand's `remove` keeps the text, as does a mark without it."""
+    todonotes, options = ((r"\usepackage[disable]{todonotes}", "") if variant == "todonotes-disable"
+                          else ("", "disable"))
+    path, log = build(tmp_path, r"""
+Ref word next and so on.\par
+One word \removealice{GONE text}{x} next and so on.\par
+Two word\removealice{GONE}{x} next and so on.\par
+Three word \removealice{GONE}{x}
+next and so on.\par
+Four word \pdfmark[remove]{GONE}{x} next and so on.\par
+Five \removealice[remove=false]{KEPT words}{x} here and \flagalice{FLAGGED}{n} too.\par
+\removealice{GONE at the start of a paragraph.}{x} Start of a paragraph.\par
+Six \removealice{GONE one.\footnote{GONE footnote.} \label{gone}
+
+GONE two.}{x} after.\par
+""", PERSONS + REMOVE, todonotes=todonotes, options=options)
+    with pymupdf.open(path) as doc:
+        assert not any(list(p.annots()) for p in doc)
+        text = " ".join(" ".join(p.get_text() for p in doc).split())
+        words = doc[0].get_text("words", sort=False)
+    assert "GONE" not in text
+    for s in ("Five KEPT words here and FLAGGED too.", "Start of a paragraph.", "Six after."):
+        assert s in text
+    gaps = [round(words[i + 1][0] - w[2], 2) for i, w in enumerate(words)
+            if w[4] == "word" and words[i + 1][4] == "next"]
+    assert len(gaps) == 5 and max(gaps) - min(gaps) < 0.1, gaps
+
+
+def test_remove_marks_with_the_notes_on(tmp_path):
+    """With the notes on, `remove` changes nothing: the annotation in the requested style,
+    the text in place, the same id as without it, and no trace of the key in the PDF."""
+    path, _ = build(tmp_path, r"""
+Here are \removealice{struck words}{Remove} and
+\pdfmark[author=A,note=false]{same words}{n} and \pdfmark[author=A,note=false,remove]{same words}{n} end.
+""", REMOVE)
+    with pymupdf.open(path) as doc:
+        annots = list(doc[0].annots())
+        nms = [raw(doc, a.xref, "NM") for a in annots]
+        assert info(doc, "PDFNotes") == "active"
+        assert not any("remove" in doc.xref_object(a.xref) for a in annots)
+        text = " ".join(doc[0].get_text().split())
+    assert "Here are struck words" in text and "Remove" in text   # the note's todonotes box
+    struck = next(e for e in pdf.annotations(path) if e["note"] == "Remove")
+    assert (struck["type"], struck["text"], struck["author"]) == ("StrikeOut", "struck words", "Alice")
+    with pymupdf.open(path) as doc:
+        assert raw(doc, struck["xref"], "Subj") is None
+        assert close(rgb(raw(doc, struck["xref"], "C")), pdf.COLORS["red"])
+    assert nms[2] == nms[1] + "-2"   # `remove' is not part of the id
+
+
 def test_info_key_pending_active_absent(tmp_path):
     """/PDFNotes in Info: pending on a run that could not place every note and mark (the first
     run with them), active once all are placed, absent when the notes are off."""

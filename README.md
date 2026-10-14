@@ -105,6 +105,12 @@ from the record. Undo through the edit service's `restore` brings back the
 annotation with its id and clears the record, so the next sync writes the
 macro back with the same id.
 
+A `remove` key added to a `\pdfmark` by hand (the package then leaves the marked
+text out of a build with the notes off, see [latex/README.md](latex/README.md))
+stays: a sync keeps the keys it does not manage. Deleting such a mark unwraps it
+to its marked text, so the text stays in the paper. Sync never adds `remove`
+itself; a strike-out made in a viewer becomes an ordinary mark.
+
 An id that is merely missing from the PDF deletes nothing. A build that read the
 sources before a sync added a mark finishes without it, and that must not cost
 the mark. The safe failure is this: a mark deleted in Okular is not recorded,

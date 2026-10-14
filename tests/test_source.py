@@ -251,6 +251,22 @@ def test_sync_update_keeps_the_other_keys(fake):
     assert source.sync(path)["updated"] == []
 
 
+
+def test_sync_keeps_the_remove_key_and_a_deleted_mark_keeps_its_text(fake):
+    """A hand-added `remove` survives an update; deleting the mark in the viewer unwraps it."""
+    path, tex = fake(PRE + "The quick \\pdfmark[id=m1,remove,author=me,style=strikeout]{brown fox}{old} jumps"
+                     " over the lazy dog.\n\\end{document}\n")
+    m = pdf.mark_text(path, 1, "brown fox", note="new", author="you", style="strikeout")["xref"]
+    set_nm(path, m, "pdfnotes:m1")
+    r = source.sync(path)
+    assert [(u["id"], u["changed"]) for u in r["updated"]] == [("m1", ["note", "author"])]
+    assert "\\pdfmark[id=m1,remove,author=you,style=strikeout]{brown fox}{new} jumps" in tex.read_text()
+    pdf.remove_annotation(path, m)
+    r = source.sync(path)
+    assert [x["id"] for x in r["removed"]] == ["m1"]
+    assert "The quick brown fox jumps over" in tex.read_text()
+
+
 def deleted(path):
     with pymupdf.open(path) as doc:
         return source.deleted_ids(doc)

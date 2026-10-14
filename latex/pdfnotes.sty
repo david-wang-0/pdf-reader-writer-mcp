@@ -13,9 +13,9 @@
 
 % ---- options ---------------------------------------------------------------------------
 % disable: no notes and no annotations from this package (marks typeset their text
-% plainly); also passed on to todonotes when that is not loaded yet. final: the same, but
-% only as an option of this package (a class option `final', as IEEEtran and others take,
-% does not switch the notes off).
+% plainly, or drop it with the remove key); also passed on to todonotes when that is not
+% loaded yet. final: the same, but only as an option of this package (a class option
+% `final', as IEEEtran and others take, does not switch the notes off).
 \bool_new:N \g__pdfnotes_disable_bool
 \DeclareOption { disable } { \bool_gset_true:N \g__pdfnotes_disable_bool }
 \DeclareOption { final } { }
@@ -50,6 +50,7 @@
 \prop_new:N \g__pdfnotes_refs_prop     % id -> reference of its (first) annotation
 \bool_new:N \l__pdfnotes_box_bool
 \bool_new:N \l__pdfnotes_note_bool
+\bool_new:N \l__pdfnotes_remove_bool
 \bool_new:N \l__pdfnotes_ok_bool
 \bool_new:N \l__pdfnotes_ign_bool
 \tl_new:N \l__pdfnotes_author_tl
@@ -136,6 +137,11 @@
     note      .default:n  = true ,
     notecolor .tl_set:N   = \l__pdfnotes_notecolor_tl ,
     todo      .code:n     = { \tl_put_right:Nn \l__pdfnotes_todo_tl { , #1 } } ,
+    % marks: with the notes off, the marked text goes too (with the notes on, nothing
+    % changes; not part of the id, not written to the PDF); \pdfnote ignores it
+    remove    .bool_set:N = \l__pdfnotes_remove_bool ,
+    remove    .initial:n  = false ,
+    remove    .default:n  = true ,
   }
 
 % Macro parameter characters (the # of color=#rrggbb) become ordinary characters, so a
@@ -163,6 +169,7 @@
     \__pdfnotes_color:
   }
 \cs_generate_variant:Nn \keys_set_known:nnN { nV }
+\cs_generate_variant:Nn \keys_set_known:nn { nV }
 \cs_generate_variant:Nn \keys_set:nn { nV }
 \cs_generate_variant:Nn \prop_gput:Nnn { NVn , NVV }
 \cs_generate_variant:Nn \prop_get:NnNTF { NV }
@@ -743,7 +750,8 @@
 % ---- marks -----------------------------------------------------------------------------
 % \pdfnotemark[keys]{marked text}{note} (also \pdfmark, unless that is taken): the marked
 % text with a markup annotation over it (one quad per line) carrying the note, plus
-% (note=true) the note as a todonotes note without an annotation of its own.
+% (note=true) the note as a todonotes note without an annotation of its own. With the
+% notes off, the marked text plainly, or (remove=true) nothing.
 \NewDocumentCommand \pdfnotemark { O{} +m +m } { \__pdfnotes_mark:nnn {#1} {#2} {#3} }
 \AddToHook { begindocument / before }
   {
@@ -766,7 +774,7 @@
 \cs_new_protected:Npn \__pdfnotes_mark:nnn #1#2#3
   {
     \__pdfnotes_if_off:TF
-      {#2}
+      { \__pdfnotes_mark_off:nn {#1} {#2} }
       {
         \group_begin:
         \__pdfnotes_set:n {#1}
@@ -813,6 +821,19 @@
               }
           }
       }
+  }
+
+% A mark with the notes off: its keys are read in a group only for remove (todonotes
+% options are skipped, the colour is not processed), and the branch is chosen before the
+% group ends. A removed mark leaves nothing, and one space where it stood, as a note does.
+\cs_new_protected:Npn \__pdfnotes_mark_off:nn #1#2
+  {
+    \group_begin:
+    \__pdfnotes_safe:Nn \l__pdfnotes_tmp_tl {#1}
+    \keys_set_known:nV { pdfnotes } \l__pdfnotes_tmp_tl
+    \bool_if:NTF \l__pdfnotes_remove_bool
+      { \group_end: \@bsphack \@esphack }
+      { \group_end: #2 }
   }
 
 % The marked text with every space between words at the top level (not in braces,
