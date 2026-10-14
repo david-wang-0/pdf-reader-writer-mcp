@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import sys
 
 import pymupdf
@@ -20,7 +21,9 @@ READ = {"page_text", "context", "locate", "links", "outline", "annotations", "re
 def run(body):
     """Start the server, initialise a session and run ``await body(session, init)``."""
     async def main():
-        params = StdioServerParameters(command=sys.executable, args=["-m", "pdf_reader_writer_mcp.server"])
+        # the whole environment, not the SDK's minimal default: coverage measures the server through it
+        params = StdioServerParameters(command=sys.executable, args=["-m", "pdf_reader_writer_mcp.server"],
+                                       env=dict(os.environ))
         with open("/dev/null", "w") as errlog:  # the server logs failed calls on stderr
             async with stdio_client(params, errlog=errlog) as (r, w):
                 async with ClientSession(r, w, read_timeout_seconds=60) as s:

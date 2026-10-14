@@ -24,7 +24,7 @@ pdf-reader-writer-mcp = "pdf_reader_writer_mcp.server:main"
 pdf-reader-writer-edit = "pdf_reader_writer_mcp.edit:main"
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "coverage>=7.10"]
 
 [build-system]
 requires = ["hatchling"]
@@ -32,3 +32,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["pdf_reader_writer_mcp"]
+
+[tool.coverage.run]
+branch = true
+source = ["pdf_reader_writer_mcp"]
+# The edit service and the stdio server run as processes in the tests: measure them too.
+# The stdio client ends the server with SIGTERM, so the data is saved on that signal.
+patch = ["subprocess"]
+sigterm = true

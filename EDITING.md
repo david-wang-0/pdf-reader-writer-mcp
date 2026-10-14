@@ -171,3 +171,11 @@ to one file at the same time, then two edit-service processes do the same: all 2
 annotations must be present and the file must open without repair. Without the lock,
 that test hangs or loses annotations. Finally, the written objects are checked in
 Okular terms (`/Subtype`, `/QuadPoints`, `/T`, `/Contents`, `/IRT`).
+
+`tests/test_edit_client.py` drives a long-lived process the way vscode-pdf-mcp's client
+(`extension/editservice.js`) and mark controller (`extension/marks.js`) do: each answer
+flushed before the next request, pipelined requests answered in order, a request
+behind a slow `sync` answered after it, stdout carrying only answers, EOF and a vanished
+client ending the process with 0, the undo stack's inverses, and `sync` after each mark
+as `extension/sourcesync.js` asks for it. `tests/test_concurrency.py` covers saves by
+programs that take no lock (Okular) during a write.

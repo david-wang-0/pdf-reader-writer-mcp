@@ -214,7 +214,35 @@ uv venv && uv pip install -e '.[test]'
 .venv/bin/pytest
 ```
 
-`pdf_reader_writer_mcp/pdf.py` holds all PDF logic and the file lock; `source.py` the sync into LaTeX sources; `server.py` is the thin MCP layer over them and `edit.py` the edit service (`.venv/bin/pdf-reader-writer-edit`). The tests that build a PDF need `pdflatex` and `synctex` on `PATH`, and are skipped without them. `tests/test_latex.py` tests `latex/pdfnotes.sty` itself (also with lualatex and xelatex when installed).
+`pdf_reader_writer_mcp/pdf.py` holds all PDF logic and the file lock; `source.py` the sync into LaTeX sources; `server.py` is the thin MCP layer over them and `edit.py` the edit service (`.venv/bin/pdf-reader-writer-edit`).
+
+The tests need the `test` extra (pytest, coverage) and nothing else from Python. No
+viewer, display or D-Bus is involved: the viewers' side is reproduced from their
+repositories (paths and pages as `viewer_state` reports them, selections as Okular and
+the VS Code viewer hand them over, the VS Code viewer's edit-service client). The tests
+that build a PDF from LaTeX need `pdflatex` and `synctex` on `PATH` (TeX Live), and are
+skipped without them; `tests/test_latex.py` also runs `lualatex` and `xelatex` when
+installed. Where SyncTeX only has to answer, a fake `synctex` script on `PATH` stands in.
+The whole suite takes about 40 s; most of it is pdflatex.
+
+| File | What it pins |
+|---|---|
+| `tests/test_pdf.py` | reading and marking: lines, search, annotations, files other programs wrote |
+| `tests/test_viewers.py` | what the viewers hand over: the reported path (links, spaces, `#`) and page, selections as Okular and pdf.js give them |
+| `tests/test_server.py` | the MCP layer in process: registration, errors as `ToolError` |
+| `tests/test_stdio.py` | the real server over stdio through the `mcp` client: tool list, instructions, result shapes, error texts |
+| `tests/test_edit.py` | every edit-service op and error message ([EDITING.md](EDITING.md)) |
+| `tests/test_edit_client.py` | the edit service as vscode-pdf-mcp's client drives it: a long-lived process, undo flows, sync after each mark |
+| `tests/test_concurrency.py` | the file lock, saves by programs that take no lock, the server and the edit service as concurrent processes |
+| `tests/test_source.py` | `sync_to_source`: the scanner, the text matcher, round trips with pdflatex and the real package |
+| `tests/test_latex.py` | `latex/pdfnotes.sty` itself |
+
+Coverage, with branches and the edit-service and server processes the tests start
+(configured in `pyproject.toml`):
+
+```sh
+.venv/bin/coverage run -m pytest && .venv/bin/coverage combine -q && .venv/bin/coverage report -m
+```
 
 ## License
 
