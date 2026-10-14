@@ -636,3 +636,62 @@ def test_package_round_trip(paper):
     path = build(paper, REAL)  # a rebuild does not bring it back, and the mark stays
     assert quiet(source.sync(path))
     assert [a["note"] for a in pdf.annotations(path) if a["type"] != "Text"] == ["a mark"]
+
+
+def by_nm(path):
+    """pdfnotes id -> annotation record, for a PDF rebuilt with the real package."""
+    with pymupdf.open(path) as doc:
+        ids = {a.xref: a.info["id"][len(source.NM_PREFIX):] for pg in doc for a in pg.annots()
+               if a.info["id"].startswith(source.NM_PREFIX)}
+    return {ids[a["xref"]]: a for a in pdf.annotations(path, geometry=True) if a["xref"] in ids}
+
+
+@needs_tex
+@needs_package
+def test_package_viewer_session(paper):
+    """A working session in the VS Code viewer: marks and replies through the edit
+    service, a sync after each, a rebuild after each sync (latexmk on save). Every
+    rebuild brings the marks back from the sources with their ids, threads and styles,
+    and the sync after it has nothing to do."""
+    path = build(paper, REAL)
+
+    def rebuilt():
+        p = build(paper, REAL)
+        assert quiet(source.sync(p)), "a sync right after a rebuild changes nothing"
+        return p, by_nm(p)
+
+    with pymupdf.open(path) as doc:
+        pg = doc[0]
+        words = [pymupdf.Rect(w[:4]) for w in pg.get_text("words") if w[4] in ("brown", "fox")]
+        rect = pdf.to_pdf_rect(pg, words[0] | words[1])
+    m = edit.mark(path, 1, [rect], "David", note="first", color="pink")
+    (mid,) = [i["id"] for i in source.sync(path)["inserted"]]
+    path, marks = rebuilt()
+    assert marks[mid]["text"] == "brown fox" and marks[mid]["author"] == "David" and marks[mid]["note"] == "first"
+
+    edit.reply(path, marks[mid]["xref"], "a reply", "llm")
+    (rid,) = [i["id"] for i in source.sync(path)["inserted"]]
+    path, marks = rebuilt()
+    assert marks[rid]["irt"] == marks[mid]["xref"] and marks[rid]["note"] == "a reply"
+
+    edit.update(path, marks[mid]["xref"], note="second")
+    assert source.sync(path)["updated"][0]["changed"] == ["note"]
+    path, marks = rebuilt()
+    assert marks[mid]["note"] == "second"
+
+    edit.update(path, marks[mid]["xref"], style="squiggly")
+    assert source.sync(path)["updated"][0]["changed"] == ["style"]
+    path, marks = rebuilt()
+    assert marks[mid]["type"] == "Squiggly" and marks[rid]["irt"] == marks[mid]["xref"]
+
+    snaps = edit.delete(path, marks[mid]["xref"])["snapshots"]
+    assert sorted(x["id"] for x in source.sync(path)["removed"]) == sorted([mid, rid])
+    path, marks = rebuilt()
+    assert mid not in marks and rid not in marks
+    assert "brown fox" in pdf.page_text(path, 1)
+
+    edit.restore(path, snaps)  # undo, after the macros were removed
+    assert sorted(i["id"] for i in source.sync(path)["inserted"]) == sorted([mid, rid])
+    path, marks = rebuilt()
+    assert marks[mid]["type"] == "Squiggly" and marks[rid]["irt"] == marks[mid]["xref"]
+    assert m["text"] == "brown fox"
