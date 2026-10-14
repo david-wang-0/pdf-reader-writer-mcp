@@ -184,7 +184,9 @@ Any other client: run `pdf-reader-writer-mcp` as a stdio server named `pdf-reade
   no unsaved state.
 - **Locking.** Writers take an exclusive `flock` on the PDF and give up after
   10 s with `PDF is locked by another writer`. Okular does not take the lock
-  (it writes only when you save).
+  (it writes only when you save). If it saves while a write is under way, the
+  write fails with `the PDF changed on disk while it was being written` and
+  Okular's save is kept; run the tool again.
 - **Lines are reconstructed.** A PDF has no lines. `page_text`, `context` and
   `locate` use PyMuPDF's block and line grouping, so a two-column page reads
   column by column, and equations or footnotes can land in odd places.

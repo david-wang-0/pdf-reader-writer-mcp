@@ -742,6 +742,7 @@ class _Sync:
         # may come from a build that read the sources before the sync that added it.
         self.delete({i for i in recorded if i not in pdf_ids})
         clear_deleted(self.doc, recorded)
+        pdf.check_unchanged(self.doc)  # before the sources: their ids are saved with the PDF
         for src in self.srcs.values():
             if src.edits:
                 new = src.result()

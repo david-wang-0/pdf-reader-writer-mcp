@@ -35,7 +35,12 @@ Waiting for the lock gives up after 10 s with `PDF is locked by another writer`.
 
 **Okular does not take the lock.** It writes only when the user saves, and it reloads
 files changed on disk. Unsaved Okular annotations are lost if the user accepts that
-reload, so agents still ask Okular users to save before writing.
+reload, so agents still ask Okular users to save before writing. A save by Okular (or any
+program that takes no lock) that lands while a write holds the lock is kept: the write
+sees that the file changed since it locked it and fails with `the PDF changed on disk
+while it was being written …`, writing nothing; `sync` checks before it edits the
+sources, so they stay as they were too. A file renamed over the PDF while a writer
+waits for the lock is locked afresh.
 
 ## Geometry
 
@@ -64,6 +69,7 @@ optional field may be `null` (same as absent). Errors:
 | no such annotation | `no annotation with xref N` |
 | `only_author` differs from /T | `not your annotation` |
 | lock wait timed out | `PDF is locked by another writer` |
+| another program saved the PDF during the write | `the PDF changed on disk while it was being written (saved by another program?): nothing was written, try again` |
 
 ## Ops
 

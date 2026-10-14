@@ -79,24 +79,69 @@ def _lock(f: Any, mode: int) -> None:
             time.sleep(0.02)
 
 
+def _identity(st: os.stat_result) -> tuple[int, ...]:
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _locked(path: str, mode: int) -> tuple[Any, os.stat_result]:
+    """``path`` opened and flocked, and the file's stat. A program that saves by
+    renaming a new file over the old one (Okular, editors) may do so while we wait:
+    the lock is then on a file nobody opens any more, so the new one is locked."""
+    while True:
+        try:
+            f = open(path, "rb")
+        except FileNotFoundError:
+            raise FileNotFoundError(f"no such file: {path}") from None
+        try:
+            _lock(f, mode)
+            st = os.fstat(f.fileno())
+            same = os.path.samestat(st, os.stat(path))
+        except FileNotFoundError:
+            f.close()
+            raise FileNotFoundError(f"no such file: {path}") from None
+        except BaseException:
+            f.close()
+            raise
+        if same:
+            return f, st
+        f.close()
+
+
+def check_unchanged(doc: pymupdf.Document) -> None:
+    """Raise if the file of ``doc`` (opened by ``_open``) changed on disk since it was
+    locked. Okular does not take the lock: its save would be lost under ours, or our
+    increment appended to its bytes, a broken file."""
+    st = getattr(doc, "_prw_stat", None)
+    try:
+        now = os.stat(doc.name)
+    except FileNotFoundError:
+        now = None
+    if st is not None and (now is None or _identity(now) != _identity(st)):
+        raise RuntimeError("the PDF changed on disk while it was being written "
+                           "(saved by another program?): nothing was written, try again")
+
+
 @contextmanager
 def _open(path: str, write: bool = False) -> Iterator[pymupdf.Document]:
     """The document, opened fresh under an flock on the file itself.
 
     Readers share the lock; a writer holds it exclusively and the document is
     saved incrementally when the block exits without an exception and changed
-    something. Nothing is kept open across calls, so a write never works on
-    stale bytes and writers in other processes (the edit service, another MCP
-    server) are never lost.
+    something, unless the file changed on disk meanwhile (``check_unchanged``).
+    Nothing is kept open across calls, so a write never works on stale bytes and
+    writers in other processes (the edit service, another MCP server) are never
+    lost.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(f"no such file: {path}")
-    with open(path, "rb") as f:
-        _lock(f, fcntl.LOCK_EX if write else fcntl.LOCK_SH)
+    f, st = _locked(path, fcntl.LOCK_EX if write else fcntl.LOCK_SH)
+    with f:
         doc = pymupdf.open(path)
+        doc._prw_stat = st
         try:
             yield doc
             if write and doc.is_dirty:
+                check_unchanged(doc)
                 if not doc.can_save_incrementally():
                     raise RuntimeError("document cannot be saved incrementally (encrypted or repaired?)")
                 doc.saveIncr()
