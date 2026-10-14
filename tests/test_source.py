@@ -431,6 +431,22 @@ def test_no_synctex_and_no_package(tmp_path, fake):
     assert Path(path).read_bytes() == before
 
 
+def test_sync_through_a_symlinked_pdf(fake, tmp_path):
+    """Regression: a viewer reports the path it opened, which may be a link to the build's
+    PDF; the SyncTeX file sits next to the target, and sync said there was none."""
+    path, tex = fake(PRE + LINES[0] + "\n\\end{document}\n")
+    view = tmp_path / "view dir #2"
+    view.mkdir()
+    link = view / "paper.pdf"
+    link.symlink_to(path)
+    x = pdf.mark_text(str(link), 1, "lazy dog")["xref"]
+    r = source.sync(str(link))
+    (ins,) = r["inserted"]
+    assert r["source"] == "doc.tex" and "{lazy dog}{}" in tex.read_text()
+    assert nm(path, x) == "pdfnotes:" + ins["id"] and link.is_symlink()
+    assert edit.handle({"id": 1, "op": "sync", "path": str(link)})["result"]["inserted"] == []
+
+
 def test_edit_op_sync(fake):
     path, tex = fake(PRE + LINES[0] + "\n\\end{document}\n")
     pdf.mark_text(path, 1, "lazy dog")

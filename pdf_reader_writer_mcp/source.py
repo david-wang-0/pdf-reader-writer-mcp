@@ -923,6 +923,9 @@ def sync(path: str) -> dict[str, Any]:
     from fresh state under the exclusive lock, with only the lookups for marks
     added or moved in between left to do there."""
     path = os.path.abspath(path)
+    real = os.path.realpath(path)
+    if real != path and synctex_file(real):
+        path = real  # a link to the build's PDF: its SyncTeX file is next to the target
     with pdf._open(path) as doc:
         stx = synctex_file(path)
         if stx is None:

@@ -76,8 +76,9 @@ author's marks are carried, yours, the model's and co-authors', each with its
   of its source line, before a `%` comment;
 - a reply becomes a `\pdfnote[…,replyto=<id>]` right after its parent's macro.
 
-It needs a SyncTeX file next to the PDF (build with `-synctex=1`), which maps
-each mark to its source line, and `\usepackage{pdfnotes}` in the preamble. Only
+It needs a SyncTeX file next to the PDF (build with `-synctex=1`; for a symlinked
+PDF, next to the file it points to will do), which maps each mark to its source
+line, and `\usepackage{pdfnotes}` in the preamble. Only
 `.tex` files in the main file's directory and below are edited, never the TeX
 tree. Each changed file is replaced atomically, with its mode and line endings.
 A symlinked `.tex` stays a symlink, and its target is replaced. The SyncTeX
