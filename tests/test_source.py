@@ -2,6 +2,7 @@ import fcntl
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 import pymupdf
@@ -431,9 +432,10 @@ def test_lookups_run_without_the_lock(fake, monkeypatch):
     pdf.mark_text(path, 1, "brown fox")
     pdf.add_note(path, 1, "n", near_text="second line")
     inner, calls = source.synctex_edit, []
+    one_at_a_time = threading.Lock()  # the lookups run in parallel: their probes must not collide
 
     def unlocked(p, page, x, y):
-        with open(p, "rb") as f:
+        with one_at_a_time, open(p, "rb") as f:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)  # BlockingIOError while anyone holds the PDF
             fcntl.flock(f, fcntl.LOCK_UN)
         calls.append(page)
