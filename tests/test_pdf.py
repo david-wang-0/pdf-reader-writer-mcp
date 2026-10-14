@@ -373,6 +373,22 @@ def test_locate(sample):
     assert pdf.locate(sample, 1, "") is None
 
 
+def test_locate_with_touching_line_boxes(tmp_path):
+    """Regression: a hit went to every line whose box it touched, and tightly set lines
+    touch, so a passage on line 2 was reported as lines 1-3."""
+    path = str(tmp_path / "t.pdf")
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "aaa bbb\nficult to\nccc ddd", fontsize=10)
+    doc.save(path); doc.close()
+    with pymupdf.open(path) as doc:
+        b1, b2 = [l["bbox"] for l in pdf._lines(doc[0])][:2]
+        assert b1.intersects(b2)  # what the test is about
+    assert pdf.locate(path, 1, "ficult to") == {"page": 1, "lines": "2-2"}
+    c = pdf.context(path, 1, "ficult to", neighbours=0)
+    assert c["lines"] == "2-2" and c["paragraph_lines"] == "1-3"
+    assert pdf.locate(path, 1, "bbb\nficult") == {"page": 1, "lines": "1-2"}
+
+
 def test_missing_file(tmp_path):
     gone = str(tmp_path / "gone.pdf")
     for call in (lambda: pdf.page_text(gone, 1), lambda: pdf.outline(gone), lambda: pdf.annotations(gone),

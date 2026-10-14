@@ -172,7 +172,8 @@ def _hit_lines(pg: pymupdf.Page, text: str, page: int) -> tuple[str, list[dict[s
     if not hits:
         raise LookupError(f"selection not found on page {page}: {needle[:60]!r}")
     ls = _lines(pg)
-    hit_lines = [l for l in ls if any(l["bbox"].intersects(h) for h in hits)]
+    # the line that holds a hit's centre: line boxes may touch or overlap
+    hit_lines = [l for l in ls if any((h.tl + h.br) / 2 in l["bbox"] for h in hits)]
     if not hit_lines:
         raise LookupError("selection found but not attributable to a text line")
     return needle, ls, hit_lines
