@@ -10,6 +10,8 @@ hyphen between two lower-case letters dropped, and ligatures spelt out (pdf.js's
 ``normalizeUnicode``).
 """
 
+import fcntl
+import os
 import re
 import shutil
 import subprocess
@@ -18,7 +20,7 @@ import unicodedata
 import pymupdf
 import pytest
 
-from pdf_reader_writer_mcp import pdf
+from pdf_reader_writer_mcp import edit, pdf
 
 needs_tex = pytest.mark.skipif(not shutil.which("pdflatex"), reason="needs pdflatex")
 
@@ -207,3 +209,102 @@ def test_tex_selections_from_both_viewers(tmp_path):
             raw = "\n".join(lines[first - 1:last])[3:-3]  # mid-word at both ends
             for text in (raw, pdfjs(raw)):
                 assert pdf.locate(path, 1, text) == {"page": 1, "lines": f"{first}-{last}"}, text
+
+
+# --- the path and page a viewer reports ---
+
+def three_pages(path):
+    doc = pymupdf.open()
+    for n in (1, 2, 3):
+        pg = doc.new_page()
+        pg.insert_text((72, 72), f"Page {n} first line of text.")
+        pg.insert_text((72, 100), "The quick brown fox jumps over the lazy dog.")
+    doc.save(path); doc.close()
+
+
+@pytest.fixture(params=["plain", "spaces, # and unicode", "symlink", "symlinked directory"])
+def reported(request, tmp_path):
+    """(the path a viewer reports, the file's realpath). Okular and the VS Code viewer
+    report the path the document was opened by: a link stays a link."""
+    if request.param == "plain":
+        real = tmp_path / "paper.pdf"
+        shown = real
+    elif request.param == "spaces, # and unicode":
+        (tmp_path / "My Papers #3").mkdir()
+        real = shown = tmp_path / "My Papers #3" / "über draft #2.pdf"
+    else:
+        (tmp_path / "build dir #1").mkdir()
+        real = tmp_path / "build dir #1" / "paper.pdf"
+        if request.param == "symlink":
+            (tmp_path / "view").mkdir()
+            shown = tmp_path / "view" / "paper.pdf"
+            shown.symlink_to(os.path.relpath(real, shown.parent))
+        else:
+            (tmp_path / "out").symlink_to(real.parent)
+            shown = tmp_path / "out" / "paper.pdf"
+    three_pages(real)
+    return str(shown), str(real)
+
+
+def entry(path, page, pages=3):
+    """A viewer_state entry (CONTRACT.md, C1)."""
+    return {"viewer": "okular", "window": "1", "path": path, "page": page, "pages": pages, "active": True}
+
+
+def test_every_tool_takes_the_reported_path_and_page(reported):
+    shown, real = reported
+    e = entry(shown, 3)  # the last page: pages are 1-based, page == pages is valid
+    path, page = e["path"], e["page"]
+    assert pdf.page_text(path, page) == pdf.page_text(real, page)
+    assert pdf.page_text(path, page).startswith("--- page 3 (2 lines) ---\n1: Page 3 first")
+    assert pdf.locate(path, page, "lazy dog") == {"page": 3, "lines": "2-2"}
+    assert pdf.context(path, page, "lazy dog")["lines"] == "2-2"
+    assert pdf.links(path, page) == [] and pdf.outline(path) == []
+    m = pdf.mark_text(path, page, "brown fox", note="n", note_in_margin=True)
+    n = pdf.add_note(path, page, "near", near_text="first line")
+    r = pdf.add_note(path, None, "reply", reply_to=n["xref"])
+    a = pdf.attach_file(path, page, "notes #1.md", "# über\n", near_text="lazy")
+    assert pdf.read_attachment(path, a["xref"])["content"] == "# über\n"
+    assert pdf.annotations(path, page) == pdf.annotations(real, page)
+    assert [x["page"] for x in pdf.annotations(path)] == [3] * 5
+    assert pdf.remove_annotation(path, n["xref"])["replies"] == [r["xref"]]
+    assert {x["xref"] for x in pdf.annotations(real)} == {m["xref"], m["note_xref"], a["xref"]}
+    if shown != real:
+        assert os.path.islink(shown) or os.path.islink(os.path.dirname(shown))
+        assert os.path.realpath(shown) == real  # written through, not replaced by a copy
+    with pymupdf.open(real) as doc:
+        assert not doc.is_repaired
+
+
+@pytest.mark.parametrize("page", [0, 4])
+def test_a_page_outside_the_reported_count(reported, page):
+    shown, _ = reported
+    for call in (lambda: pdf.page_text(shown, page), lambda: pdf.locate(shown, page, "fox"),
+                 lambda: pdf.mark_text(shown, page, "fox"), lambda: pdf.add_note(shown, page, "n")):
+        with pytest.raises(ValueError, match=f"^page {page} outside 1-3$"):
+            call()
+
+
+def test_the_edit_service_and_the_tools_by_either_name(reported):
+    """The VS Code viewer sends the edit service the realpath; the model may use the path
+    Okular reports. Both name one file, and its marks."""
+    shown, real = reported
+    r = edit.handle({"id": 1, "op": "note", "path": real, "page": 2, "point": [100, 700], "note": "n", "author": "D"})
+    x = r["result"]["xref"]
+    assert [a["xref"] for a in pdf.annotations(shown)] == [x]
+    pdf.add_note(shown, None, "answer", reply_to=x)
+    assert [a["irt"] for a in edit.handle({"id": 2, "op": "list", "path": real})["result"]] == [0, x]
+    gone = shown + ".missing"
+    assert edit.handle({"id": 3, "op": "list", "path": gone})["error"] == f"no such file: {gone}"
+
+
+def test_one_lock_whichever_name(reported, monkeypatch):
+    """flock goes to the file itself: a writer by one name waits for a reader by another."""
+    shown, real = reported
+    monkeypatch.setattr(pdf, "LOCK_TIMEOUT", 0.05)
+    for held_by, written_by in ((real, shown), (shown, real)):
+        with open(held_by, "rb") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
+            with pytest.raises(TimeoutError, match="PDF is locked by another writer"):
+                pdf.add_note(written_by, 1, "n")
+    assert pdf.annotations(real) == []

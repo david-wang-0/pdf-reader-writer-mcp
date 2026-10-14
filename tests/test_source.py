@@ -560,6 +560,35 @@ def test_tex_symlinked_input_stays_a_symlink(tmp_path):
 
 
 @needs_tex
+def test_tex_paths_as_a_viewer_reports_them(tmp_path):
+    """A paper in a directory with spaces and '#', its sections \\input from a subdirectory
+    that is a symlink, read through a link to the PDF (as Okular reports it) while the
+    VS Code viewer's edit service uses the realpath."""
+    d = tmp_path / "My Paper #1"
+    (d / "parts").mkdir(parents=True)
+    shared = tmp_path / "shared sections"
+    shared.mkdir()
+    (shared / "intro.tex").write_text("The introduction has its own words.\n")
+    (d / "sections").symlink_to(shared)
+    (d / "doc.tex").write_text(DOC.replace("\\input{sec}", "\\input{sections/intro}\n\\input{parts/two}"))
+    (d / "parts" / "two.tex").write_text("Part two closes the paper.\n")
+    real = build(d)
+    (tmp_path / "view").mkdir()
+    link = tmp_path / "view" / "paper.pdf"
+    link.symlink_to(real)
+    pdf.mark_text(str(link), 1, "own words", note="from the model")
+    pdf.mark_text(str(link), 1, "closes the paper", note="and here")
+    r = source.sync(str(link))
+    files = sorted((i["file"], i["macro"]) for i in r["inserted"])
+    assert files == [("parts/two.tex", "pdfmark"), ("sections/intro.tex", "pdfmark")], r
+    assert (d / "sections").is_symlink() and "\\pdfmark[id=" in (shared / "intro.tex").read_text()
+    assert "{closes the paper}{and here}" in (d / "parts" / "two.tex").read_text()
+    again = edit.handle({"id": 1, "op": "sync", "path": real})["result"]
+    assert quiet(again) and again["source"] == "doc.tex"
+    build(d)  # and it still builds
+
+
+@needs_tex
 def test_tex_undo_delete_after_sync(paper):
     path = build(paper)
     m = pdf.mark_text(path, 1, "own words", note="and a reply", note_in_margin=True)["xref"]
