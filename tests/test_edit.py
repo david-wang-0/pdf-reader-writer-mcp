@@ -225,6 +225,24 @@ def test_delete_takes_the_whole_thread_and_restore_brings_it_back(sample):
     assert after[xrefs[str(root["xref"])]]["text"] == "lazy"
 
 
+def test_restore_a_reply_whose_parent_is_gone(sample):
+    """Regression: the viewer's undo of a deleted reply, after its parent was removed by
+    someone else, restored a reply to nothing (/IRT to a freed object): pdf.js shows a
+    reply only in its parent's popup, and sync skipped it as "parent not in the sources"."""
+    parent = call("note", path=sample, page=1, point=[100, 500], note="parent", author="llm")["xref"]
+    reply = call("reply", path=sample, xref=parent, note="mine", author="David")["xref"]
+    undo = call("delete", path=sample, xref=reply)["snapshots"]
+    assert undo[0]["irt"] == parent
+    new = call("restore", path=sample, snapshots=undo)["xrefs"][str(reply)]
+    assert {a["xref"]: a["irt"] for a in call("list", path=sample)}[new] == parent  # thread kept
+    undo = call("delete", path=sample, xref=new)["snapshots"]
+    pdf.remove_annotation(sample, parent)  # the model removes its note
+    new = call("restore", path=sample, snapshots=undo)["xrefs"][str(undo[0]["xref"])]
+    (a,) = call("list", path=sample)
+    assert a["xref"] == new and a["irt"] == 0 and "reply_to" not in a and a["note"] == "mine"
+    assert raw(sample, new, "IRT") == ("null", "null")
+
+
 def test_delete_only_author(sample):
     x = call("note", path=sample, page=1, point=[50, 50], note="n", author="llm")["xref"]
     assert error("delete", path=sample, xref=x, only_author="David") == "not your annotation"

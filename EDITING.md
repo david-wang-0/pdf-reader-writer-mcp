@@ -119,7 +119,9 @@ no thread, and `color`, `opacity` and `icon` can be `null`.
 
 **`restore`** `{path, snapshots}`
 Recreates the snapshots in order. An `irt` that names an earlier snapshot in the
-list is remapped to its new xref, so a deleted thread comes back as a thread. Each
+list is remapped to its new xref, so a deleted thread comes back as a thread. An `irt` that
+names no annotation (its parent was deleted since) is dropped: the annotation comes back on
+its own rather than as a reply to nothing. Each
 annotation gets its `nm` back, and its `pdfnotes` id leaves `/PDFNotesDeleted`, so an
 undo after a `sync` puts the macro back with the same id. All or
 nothing: on any error, nothing is written. → `{xrefs: {"<old>": <new>, ...}}` (JSON

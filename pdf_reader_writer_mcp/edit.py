@@ -222,12 +222,17 @@ def restore(path: str, snapshots: list) -> dict[str, Any]:
     deleted."""
     mapping: dict[int, int] = {}
     with pdf._open(path, write=True) as doc:
+        present = {a.xref for pg in doc for a in pg.annots()}
         for s in snapshots:
             if not isinstance(s, dict) or not {"xref", "page", "subtype", "rect"} <= s.keys():
                 raise RequestError("each snapshot needs at least xref, page, subtype and rect")
             irt = s.get("irt") or 0
-            a = _restore_one(doc, s, mapping.get(irt, irt))
+            irt = mapping.get(irt, irt)
+            # A parent deleted since (by another writer) leaves a stand-alone note, not a
+            # reply to nothing that viewers hide and sync never carries.
+            a = _restore_one(doc, s, irt if irt in present else 0)
             mapping[s["xref"]] = a.xref
+            present.add(a.xref)
         source.clear_deleted(doc, {source.nm_id(doc, x) for x in mapping.values()} - {""})
     return {"xrefs": {str(k): v for k, v in mapping.items()}}
 
