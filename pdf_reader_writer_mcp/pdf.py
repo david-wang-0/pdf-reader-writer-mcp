@@ -59,6 +59,18 @@ def parse_color(spec: str | None, default: tuple[float, float, float]) -> tuple[
     raise ValueError(f"unknown colour {spec!r}: use one of {names}, #rrggbb, or 'r,g,b' in 0-1")
 
 
+# Page.search_for's flags without TEXT_DEHYPHENATE, which is its default: a selection is
+# matched literally first (Okular keeps a line-end hyphen), then by ``_matches``, which
+# dehyphenates itself. MuPDF's own dehyphenation (broken in PyMuPDF 1.27.1-1.28.x, working
+# again from 2.0, #4994) returns the line-end hyphen's box with a match that starts on the
+# next line, so the hit reached back into the line before.
+SEARCH_FLAGS = pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_PRESERVE_LIGATURES | pymupdf.TEXT_MEDIABOX_CLIP
+
+
+def _search(pg: pymupdf.Page, text: str, quads: bool = False) -> list[Any]:
+    return pg.search_for(text, quads=quads, flags=SEARCH_FLAGS)
+
+
 _MARKUP = {
     pymupdf.PDF_ANNOT_HIGHLIGHT,
     pymupdf.PDF_ANNOT_UNDERLINE,
@@ -279,7 +291,7 @@ def _hit_lines(pg: pymupdf.Page, text: str, page: int) -> tuple[str, list[dict[s
     ls = _lines(pg)
     # Long selections can cross columns or pages: fall back to their first words.
     for part in (needle, " ".join(needle.split()[:6])):
-        hits = pg.search_for(part)
+        hits = _search(pg, part)
         if hits:
             # the line that holds a hit's centre: line boxes may touch or overlap
             hit_lines = [l for l in ls if any((h.tl + h.br) / 2 in l["bbox"] for h in hits)]
@@ -531,10 +543,10 @@ def add_markup(pg: pymupdf.Page, quads: list[pymupdf.Quad], style: str,
 def _find_quads(pg: pymupdf.Page, text: str, page: int) -> list[pymupdf.Quad]:
     if not text.split():  # MuPDF finds a blank everywhere there is a space
         raise ValueError("text is empty: quote the passage from the page")
-    quads = pg.search_for(text, quads=True)
+    quads = _search(pg, text, quads=True)
     if not quads:
         # Retry with whitespace normalised: selections often carry line breaks.
-        quads = pg.search_for(" ".join(text.split()), quads=True)
+        quads = _search(pg, " ".join(text.split()), quads=True)
     if not quads:
         # A selection as pdf.js gives it (dehyphenated, ligatures spelt out): one quad
         # per line of each occurrence.

@@ -99,8 +99,9 @@ def test_selection_locates_to_its_lines(hyphenated, viewer, name):
 
 
 def test_pdfjs_selection_across_a_hyphen_used_to_be_lost(hyphenated):
-    """Regression: MuPDF's search does not dehyphenate, so "difficult" (pdf.js) was not
-    found; locate fell back to the first six words and reported line 1 only, or None."""
+    """Regression: the literal search (no dehyphenation, ``pdf.SEARCH_FLAGS``) misses
+    "difficult" (pdf.js); before ``_matches``, locate fell back to the first six words and
+    reported line 1 only, or None."""
     assert pdf.locate(hyphenated, 1, "is difficult to satisfy") == {"page": 1, "lines": "1-2"}
     assert pdf.locate(hyphenated, 1, "Characteristically incomprehensible") == {"page": 1, "lines": "3-4"}
     assert pdf.locate(hyphenated, 1, "the official workflow is difficult to satisfy, and the configuration") \
@@ -122,6 +123,32 @@ def test_mark_text_takes_the_selection_as_given(hyphenated, viewer):
         quads = pdf.annot_quads(next(pg.annots()))
         hit = {l["n"] for l in ls for q in quads if l["bbox"].intersects(q.rect)}
     assert hit == {1, 2}
+
+
+@pytest.mark.parametrize("quote, line", [
+    ("ficult to satisfy,", 2),      # starts right after a line-end hyphen
+    ("class fluffy offices.", 3),   # starts after the hyphen of a compound
+    ("hensible considerations", 4),
+    ("the configuration reflects first-", 2),  # ends at a line-end hyphen
+])
+def test_a_quote_next_to_a_line_end_hyphen_marks_its_own_line_only(hyphenated, quote, line):
+    """Regression (PyMuPDF 2.0, whose search dehyphenates again, #4994): a match starting
+    after a line-end hyphen also returned the hyphen's box on the line before, so the mark
+    reached into that line, ``locate`` reported it, and a note went level with it."""
+    assert pdf.locate(hyphenated, 1, quote) == {"page": 1, "lines": f"{line}-{line}"}
+    pdf.mark_text(hyphenated, 1, quote)
+    (a,) = pdf.annotations(hyphenated)
+    assert a["text"] == quote
+    with pymupdf.open(hyphenated) as doc:
+        pg = doc[0]
+        ls = pdf._lines(pg)
+        quads = pdf.annot_quads(next(pg.annots()))
+    assert {l["n"] for l in ls for q in quads if (q.rect.tl + q.rect.br) / 2 in l["bbox"]} == {line}
+    pdf.add_note(hyphenated, 1, "here", near_text=quote)
+    (n,) = [x for x in pdf.annotations(hyphenated, geometry=True) if x["type"] == "Text"]
+    with pymupdf.open(hyphenated) as doc:
+        y = pdf.from_pdf_rect(doc[0], n["rect"]).y0
+    assert ls[line - 1]["bbox"].y0 - 4 <= y <= ls[line - 1]["bbox"].y1, (y, ls[line - 1]["bbox"])
 
 
 def test_dehyphenated_text_is_marked_wherever_it_occurs(tmp_path):

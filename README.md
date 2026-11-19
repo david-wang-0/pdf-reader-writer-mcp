@@ -231,6 +231,13 @@ skipped without them; `tests/test_latex.py` also runs `lualatex` and `xelatex` w
 installed. Where SyncTeX only has to answer, a fake `synctex` script on `PATH` stands in.
 The whole suite takes about 40 s; most of it is pdflatex.
 
+PyMuPDF 1.27.1 or later is needed, 2.x included (the suite passes on 1.27.1, 1.27.2.3,
+1.28.2 and 2.1; 2.x needs Python 3.11 or later). To run it on another release, install
+that one into the venv (`uv pip install 'pymupdf==1.28.2'`). Text search runs without
+MuPDF's dehyphenation (`SEARCH_FLAGS` in `pdf.py`), so it behaves the same on every
+release: that option was broken in 1.27.1 to 1.28.x and works again from 2.0, where it
+returned the line-end hyphen's box with a match that starts on the next line.
+
 | File | What it pins |
 |---|---|
 | `tests/test_pdf.py` | reading and marking: lines, search, annotations, files other programs wrote |
